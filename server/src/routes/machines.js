@@ -62,6 +62,13 @@ router.post('/', async (req, res) => {
   // guardamos el mismo valor en ambas columnas.
   const serial = (arduino_id ?? device_serial)?.trim() || null;
 
+  if (serial) {
+    const existing = db.prepare('SELECT id, name FROM machines WHERE arduino_id = ? OR device_serial = ?').get(serial, serial);
+    if (existing) {
+      return res.status(400).json({ error: `El Arduino ID/Serial "${serial}" ya está asignado a la máquina "${existing.name}" (ID: ${existing.id})` });
+    }
+  }
+
   db.prepare(`
     INSERT INTO machines
       (id, name, location, address, model, device_serial, arduino_id, api_key,
@@ -121,6 +128,24 @@ router.put('/:id', async (req, res) => {
   const machine = db.prepare('SELECT id FROM machines WHERE id = ?').get(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
 
+  // Validar unicidad del Arduino ID/Serial si se intenta modificar
+  let newSerial = undefined;
+  const hasArduinoId = Object.prototype.hasOwnProperty.call(req.body, 'arduino_id');
+  const hasDeviceSerial = Object.prototype.hasOwnProperty.call(req.body, 'device_serial');
+
+  if (hasArduinoId) {
+    newSerial = req.body.arduino_id?.trim() || null;
+  } else if (hasDeviceSerial) {
+    newSerial = device_serial?.trim() || null;
+  }
+
+  if (newSerial !== undefined && newSerial !== null) {
+    const existing = db.prepare('SELECT id, name FROM machines WHERE (arduino_id = ? OR device_serial = ?) AND id != ?').get(newSerial, newSerial, req.params.id);
+    if (existing) {
+      return res.status(400).json({ error: `El Arduino ID/Serial "${newSerial}" ya está asignado a la máquina "${existing.name}" (ID: ${existing.id})` });
+    }
+  }
+
   if (qr_mode !== undefined && !['dynamic', 'fixed'].includes(qr_mode)) {
     return res.status(400).json({ error: "qr_mode debe ser 'dynamic' o 'fixed'" });
   }
@@ -174,9 +199,9 @@ router.put('/:id', async (req, res) => {
   // arduino_id (= serial de placa) necesita manejo explícito: COALESCE no permite
   // desvincular (null) ni dejarlo vacío. Si el body incluye la clave, la aplicamos
   // tal cual a ambas columnas (arduino_id y device_serial son lo mismo).
-  if (Object.prototype.hasOwnProperty.call(req.body, 'arduino_id')) {
-    const aid = req.body.arduino_id?.trim() || null;
-    db.prepare('UPDATE machines SET arduino_id = ?, device_serial = ? WHERE id = ?').run(aid, aid, req.params.id);
+  // Sincronizar y actualizar arduino_id y device_serial si se modificaron
+  if (newSerial !== undefined) {
+    db.prepare('UPDATE machines SET arduino_id = ?, device_serial = ? WHERE id = ?').run(newSerial, newSerial, req.params.id);
   }
 
   // client_id necesita manejo explícito: COALESCE no permite desvincular (null).
