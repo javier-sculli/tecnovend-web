@@ -196,7 +196,7 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
   }
 
   const machineId = machine.id;
-  const { rssi, uptime, fw, in_service } = req.body || {};
+  const { rssi, uptime, fw, in_service, operation_id, mp_payment_id, payment_id, pulse_id } = req.body || {};
   const hasService = typeof in_service === 'boolean';
   const status = hasService ? (in_service ? 'active' : 'maintenance') : null;
 
@@ -220,7 +220,42 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
     rssi: Number.isInteger(rssi) ? rssi : null,
     uptime: Number.isInteger(uptime) ? uptime : null,
     fw: typeof fw === 'string' ? fw : null,
+    operation_id: operation_id || mp_payment_id || null,
+    payment_id: payment_id || null,
+    pulse_id: pulse_id || null,
   });
+
+  // Procesar devoluciones asociadas al heartbeat (por ejemplo si se reporta fuera de servicio con un pago fallido)
+  const targetMpPaymentId = operation_id || mp_payment_id;
+  if (targetMpPaymentId) {
+    const p = db.prepare('SELECT id FROM payments WHERE mp_payment_id = ?').get(String(targetMpPaymentId));
+    if (p) {
+      refundPaymentById(p.id)
+        .then(r => console.log(`[heartbeat-refund] Reembolso solicitado para mp_payment_id ${targetMpPaymentId}:`, r.ok))
+        .catch(e => console.error(`[heartbeat-refund] Error al reembolsar mp_payment_id ${targetMpPaymentId}:`, e.message));
+    } else {
+      console.warn(`[heartbeat-refund] Pago no encontrado para mp_payment_id ${targetMpPaymentId}`);
+    }
+  }
+
+  if (payment_id) {
+    refundPaymentById(payment_id)
+      .then(r => console.log(`[heartbeat-refund] Reembolso solicitado para payment_id ${payment_id}:`, r.ok))
+      .catch(e => console.error(`[heartbeat-refund] Error al reembolsar payment_id ${payment_id}:`, e.message));
+  }
+
+  if (pulse_id) {
+    const pulse = db.prepare(`SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?`)
+      .get(pulse_id, machineId);
+    if (pulse && pulse.status !== 'acked') {
+      db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulse.id);
+      if (pulse.payment_id) {
+        refundPaymentById(pulse.payment_id)
+          .then(r => console.log(`[heartbeat-refund] Reembolso solicitado vía pulse_id ${pulse_id}:`, r.ok))
+          .catch(e => console.error(`[heartbeat-refund] Error al reembolsar vía pulse_id ${pulse_id}:`, e.message));
+      }
+    }
+  }
 
   // Si el heartbeat trae el reporte de servicio, lo dejamos en el timeline.
   if (hasService) {
