@@ -331,11 +331,25 @@ export async function provisionMachinePos(machine) {
 
   let pos = (await listPOS(store.id, clientId)).find(p => String(p.external_id) === posExtId) || null;
   if (!pos) {
-    pos = await createPOS({
-      externalId: posExtId,
-      name: machine.name,
-      externalStoreId: storeExtId,
-    }, clientId);
+    let attempts = 3;
+    while (attempts > 0) {
+      try {
+        pos = await createPOS({
+          externalId: posExtId,
+          name: machine.name,
+          externalStoreId: storeExtId,
+        }, clientId);
+        break;
+      } catch (e) {
+        attempts--;
+        if (attempts > 0 && e.message.includes('External store id does not refer any store')) {
+          console.warn(`[mp] provisión POS falló por store no propagado. Reintentando en 3s... (${attempts} intentos restantes)`);
+          await new Promise(r => setTimeout(r, 3000));
+        } else {
+          throw e;
+        }
+      }
+    }
   } else {
     // Caja ya existente: LIMPIAMOS el notification_url. Si está seteado, overridea
     // la config global de Webhooks del panel y limita los avisos. Best-effort.
