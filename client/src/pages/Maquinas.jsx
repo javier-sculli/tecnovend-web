@@ -541,7 +541,10 @@ function PulsesCard({ machineId }) {
             <span></span>
           </div>
           {pulses.map((p) => {
-            const st = PULSE_STATUS[p.status] || { cls: 'off', txt: p.status };
+            let st = PULSE_STATUS[p.status] || { cls: 'off', txt: p.status };
+            if (p.status === 'expired' && p.acked_at) {
+              st = { cls: 'warn', txt: 'Acreditado y Cancelado' };
+            }
             const inFlight = p.status === 'pending' || p.status === 'delivered';
             return (
               <div className="tx pulse-row" key={p.id}>
