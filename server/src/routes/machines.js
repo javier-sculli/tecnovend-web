@@ -306,7 +306,21 @@ router.get('/:id/events', (req, res) => {
       if (d.rssi != null) parts.push(`${d.rssi} dBm`);
       if (d.uptime != null) parts.push(`uptime ${d.uptime}s`);
       if (d.fw) parts.push(`fw ${d.fw}`);
-      out.push({ type: e.type, kind: 'ok', title: 'Heartbeat', desc: parts.join(' · ') || 'señal de vida', at: e.created_at });
+      
+      let desc = parts.join(' · ') || 'señal de vida';
+      let kind = 'ok';
+      let title = 'Heartbeat';
+      
+      if (d.reason || d.affected_pulse_id) {
+        kind = 'warn';
+        title = 'Heartbeat (Falla de Venta)';
+        const failParts = [];
+        if (d.reason) failParts.push(`motivo: ${d.reason}`);
+        if (d.affected_pulse_id) failParts.push(`pulso: ${d.affected_pulse_id}`);
+        desc = `${desc} ⚠️ [FALLA] ${failParts.join(' · ')}`;
+      }
+      
+      out.push({ type: e.type, kind, title, desc, at: e.created_at });
     } else if (e.type === 'config') {
       out.push({ type: e.type, kind: 'ok', title: 'Solicitó configuración', desc: d.pulse_value != null ? `pulse_value $${d.pulse_value}` : '', at: e.created_at });
     } else if (e.type === 'service') {

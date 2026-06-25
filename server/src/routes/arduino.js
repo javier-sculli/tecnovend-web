@@ -228,7 +228,7 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
   if (affected_pulse_id) {
     const pulse = db.prepare(`SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?`)
       .get(affected_pulse_id, machineId);
-    if (pulse && pulse.status !== 'acked') {
+    if (pulse) {
       db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulse.id);
       if (pulse.payment_id) {
         refundPaymentById(pulse.payment_id)
