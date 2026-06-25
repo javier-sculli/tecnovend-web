@@ -311,13 +311,16 @@ router.get('/:id/events', (req, res) => {
       let kind = 'ok';
       let title = 'Heartbeat';
       
-      if (d.reason || d.affected_pulse_id) {
+      if (d.affected_pulse_id || d.reason === 'sale_timeout') {
         kind = 'warn';
         title = 'Heartbeat (Falla de Venta)';
         const failParts = [];
         if (d.reason) failParts.push(`motivo: ${d.reason}`);
         if (d.affected_pulse_id) failParts.push(`pulso: ${d.affected_pulse_id}`);
         desc = `${desc} ⚠️ [FALLA] ${failParts.join(' · ')}`;
+      } else if (d.reason) {
+        // Otros motivos no críticos (ej: startup, out_of_service) se muestran en la descripción normal
+        desc = `${desc} · Motivo: ${d.reason === 'startup' ? 'inicio (startup)' : d.reason}`;
       }
       
       out.push({ type: e.type, kind, title, desc, at: e.created_at });
