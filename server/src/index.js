@@ -1,8 +1,12 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import authRouter from './routes/auth.js';
 import machinesRouter from './routes/machines.js';
 import clientsRouter from './routes/clients.js';
+import { requireAuth } from './middleware/auth.js';
 import webhooksRouter from './routes/webhooks.js';
 import arduinoRouter from './routes/arduino.js';
 import mpRouter from './routes/mp.js';
@@ -13,6 +17,7 @@ import docsRouter from './routes/docs.js';
 import './db/schema.js';
 import { expireStalePulses } from './services/pulses.js';
 import { flagPaymentsForRefund, processPendingRefunds } from './services/refunds.js';
+import { reconcileAll } from './services/reconcile.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,6 +28,10 @@ app.use(express.json());
 
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
+app.use('/api/auth', authRouter);
+// NOTA: la validación de sesión en estos endpoints está desactivada por ahora
+// (el login de la web funciona, pero la API no exige token). Reactivar cuando
+// la web nueva esté estable: app.use('/api/machines', requireAuth, ...)
 app.use('/api/machines', machinesRouter);
 app.use('/api/clients', clientsRouter);
 app.use('/api/webhooks', webhooksRouter);
@@ -30,6 +39,16 @@ app.use('/api/mp', mpRouter);
 app.use('/arduino', arduinoRouter);
 app.use('/api/debug', debugRouter);
 app.use('/api/docs', docsRouter);
+
+// Web de gestión: el mismo Express sirve el build de React (client/dist copiado
+// a server/public con `npm run build:web` desde la raíz). Va DESPUÉS de las
+// rutas API; el fallback devuelve index.html para las rutas del SPA.
+const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+app.use(express.static(publicDir));
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/arduino') || req.path.startsWith('/health')) return next();
+  res.sendFile(path.join(publicDir, 'index.html'), (err) => { if (err) next(); });
+});
 
 app.listen(PORT, () => {
   console.log(`Tecnovend API corriendo en http://localhost:${PORT}`);
@@ -58,3 +77,20 @@ setInterval(async () => {
     _sweeping = false;
   }
 }, 60_000);
+
+// Reconciliación de fondo: rescata pagos que entraron a la cuenta de MP pero no
+// generaron webhook (ej: monto tipeado en QR estático). Corre cada 2 min sobre
+// todas las cuentas conectadas. Es la red de seguridad; el poll del Arduino
+// además fuerza un refresco on-demand de su máquina (ver services/reconcile.js).
+let _reconciling = false;
+setInterval(async () => {
+  if (_reconciling) return;
+  _reconciling = true;
+  try {
+    await reconcileAll();
+  } catch (e) {
+    console.error('[reconcile]', e.message);
+  } finally {
+    _reconciling = false;
+  }
+}, 120_000);

@@ -3,6 +3,8 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
+import { apiFetch, API_BASE } from '../api.js';
+import { useAuth } from '../auth.jsx';
 
 /* ---------- Helpers ---------- */
 const ars = (n) => "$" + n.toLocaleString("es-AR", { maximumFractionDigits: 0 });
@@ -42,24 +44,6 @@ const stateMeta = {
   out_of_service: { dot: 'warn', txt: 'Fuera de servicio' },
   offline:        { dot: 'bad',  txt: 'Sin conexión' },
 };
-
-const API_BASE = (() => {
-  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
-  if (typeof window !== 'undefined' && !['localhost','127.0.0.1'].includes(window.location.hostname))
-    return window.location.origin.replace('tecnovend-web', 'tecnovend-api');
-  return '';
-})();
-
-async function apiFetch(path, opts = {}) {
-
-  const res = await fetch(API_BASE + path, {
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    ...opts,
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-  return json;
-}
 
 function normalizeMachine(m) {
   const channels_config = m.channels_config ?? [];
@@ -162,7 +146,7 @@ function MachineList({ machines, onOpen, onNew, clientsById = {} }) {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar por nombre, sede, pos_id, terminal_id…"
+            placeholder="Buscar por nombre, sede, pos_id…"
           />
         </div>
         <button className="filter-btn"><span className="label">Sede:</span><span className="value">Todas</span>{Icon.chevDown}</button>
@@ -211,11 +195,7 @@ function MachineList({ machines, onOpen, onNew, clientsById = {} }) {
                 <div className="sub">{m.address}</div>
               </div>
               <div className="tag-stack">
-                {m.terminal_id ? (
-                  <span className="tag point">{Icon.card} {m.terminal_id.slice(-10)}</span>
-                ) : (
-                  <span className="tag empty">{Icon.card} sin Point</span>
-                )}
+                {/* Point oculto hasta tener los posnet físicos (Fase 2) */}
                 {m.pos_id ? (
                   <span className="tag qr">{Icon.qr} {m.pos_id}</span>
                 ) : (
@@ -258,7 +238,7 @@ function PaymentsCard({ machineId }) {
 
   const load = async () => {
     try {
-      const data = await apiFetch(`/api/mp/payments?machineId=${machineId}&limit=50`);
+      const data = await apiFetch(`/api/mp/payments?machineId=${machineId}&limit=500`);
       setPayments(data); setLastRefresh(new Date());
     } catch {}
     finally { setLoading(false); }
@@ -273,7 +253,7 @@ function PaymentsCard({ machineId }) {
   }, [machineId]);
 
   const refund = async (p) => {
-    if (!confirm(`¿Devolver este pago al cliente por Mercado Pago?\n\nMonto: ${ars(p.amount)} · ${p.mp_payment_id}\nSe reembolsa el total. No se puede deshacer.`)) return;
+    if (!confirm(`¿Devolver este pago al cliente por Mercado Pago?\n\nMonto: ${ars(p.amount)} · ${p.mp_payment_id}\nSe reembolsa el total y, si tiene pulsos en cola, se eliminan (no dispensa). No se puede deshacer.`)) return;
     setBusy(p.id);
     try {
       await apiFetch(`/api/mp/payments/${p.id}/refund`, { method: 'POST' });
@@ -367,17 +347,34 @@ function PaymentsCard({ machineId }) {
 
 /* ---------- Events Card ---------- */
 const EVENT_ICON = { heartbeat: '♥', config: '⚙', service: '⏻', ack: '✓', payment: '$' };
+const EVENT_TYPES = [
+  { value: 'heartbeat', label: 'Heartbeat' },
+  { value: 'config',    label: 'Configuración' },
+  { value: 'service',   label: 'Servicio' },
+  { value: 'ack',       label: 'ACK de pulsos' },
+  { value: 'payment',   label: 'Pagos' },
+];
+
+// "2026-06-16 12:34:56" (UTC) → "2026-06-16" en zona local
+const eventLocalDay = (at) => {
+  const d = new Date(at.replace(' ', 'T') + 'Z');
+  const off = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - off).toISOString().slice(0, 10);
+};
 
 function EventsCard({ machineId }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState(null);
+  const [fType, setFType] = useState('');
+  const [fFrom, setFFrom] = useState('');
+  const [fTo, setFTo] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const data = await apiFetch(`/api/machines/${machineId}/events?limit=80`);
+        const data = await apiFetch(`/api/machines/${machineId}/events?limit=500`);
         if (!cancelled) { setEvents(data); setLastRefresh(new Date()); }
       } catch {}
       finally { if (!cancelled) setLoading(false); }
@@ -387,13 +384,26 @@ function EventsCard({ machineId }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [machineId]);
 
+  const hasFilters = fType || fFrom || fTo;
+  const filtered = events.filter(e => {
+    if (fType && e.type !== fType) return false;
+    if (fFrom || fTo) {
+      const day = e.at ? eventLocalDay(e.at) : '';
+      if (fFrom && day < fFrom) return false;
+      if (fTo && day > fTo) return false;
+    }
+    return true;
+  });
+
   return (
     <div className="card">
       <div className="card-head">
         <div>
           <div className="card-title">Eventos</div>
           <div className="card-sub">
-            {loading ? 'cargando…' : `${events.length} evento${events.length !== 1 ? 's' : ''} · heartbeat, config, ACK y pagos · auto-refresh cada 60 s`}
+            {loading
+              ? 'cargando…'
+              : `${hasFilters ? `${filtered.length} de ${events.length}` : events.length} evento${(hasFilters ? filtered.length : events.length) !== 1 ? 's' : ''} · heartbeat, config, ACK y pagos · auto-refresh cada 60 s`}
           </div>
         </div>
         {lastRefresh && (
@@ -402,14 +412,35 @@ function EventsCard({ machineId }) {
           </span>
         )}
       </div>
+      <div className="events-filters">
+        <select value={fType} onChange={e => setFType(e.target.value)}>
+          <option value="">Todos los tipos</option>
+          {EVENT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+        <label className="ef-date">
+          <span>Desde</span>
+          <input type="date" value={fFrom} max={fTo || undefined} onChange={e => setFFrom(e.target.value)} />
+        </label>
+        <label className="ef-date">
+          <span>Hasta</span>
+          <input type="date" value={fTo} min={fFrom || undefined} onChange={e => setFTo(e.target.value)} />
+        </label>
+        {hasFilters && (
+          <button className="ef-clear" onClick={() => { setFType(''); setFFrom(''); setFTo(''); }}>Limpiar</button>
+        )}
+      </div>
       {!loading && events.length === 0 ? (
         <div style={{ padding: '28px 18px', textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
           Sin eventos registrados para esta máquina aún.
         </div>
+      ) : !loading && filtered.length === 0 ? (
+        <div style={{ padding: '28px 18px', textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
+          Ningún evento coincide con los filtros.
+        </div>
       ) : (
         <div className="card-body">
           <div className="timeline">
-            {events.map((e, i) => (
+            {filtered.map((e, i) => (
               <div className={"tl-item " + (e.kind || 'ok')} key={i}>
                 <div className="t">
                   <span className="mono" style={{ marginRight: 6, color: 'var(--ink-4)' }}>{EVENT_ICON[e.type] || '•'}</span>
@@ -443,7 +474,7 @@ function PulsesCard({ machineId }) {
 
   const load = async () => {
     try {
-      const data = await apiFetch(`/api/machines/${machineId}/pulses?limit=80`);
+      const data = await apiFetch(`/api/machines/${machineId}/pulses?limit=500`);
       setPulses(data); setLastRefresh(new Date());
     } catch {}
     finally { setLoading(false); }
@@ -457,12 +488,22 @@ function PulsesCard({ machineId }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [machineId]);
 
-  const remove = async (id) => {
-    if (!confirm('¿Eliminar este pulso de la cola? No se va a acreditar en la máquina.')) return;
-    setBusy(id);
+  const remove = async (p) => {
+    const inFlight = p.status === 'pending' || p.status === 'delivered';
+    let refund = false;
+    if (inFlight) {
+      if (!confirm('¿Eliminar este pulso de la cola? No se va a acreditar en la máquina.')) return;
+      if (p.payment_id) {
+        refund = confirm('¿Devolver también el pago al cliente por Mercado Pago?\n\nAceptar = se reembolsa el total del pago.\nCancelar = solo se elimina el pulso (el pago queda cobrado).');
+      }
+    } else {
+      if (!confirm('¿Borrar este pulso del historial?')) return;
+    }
+    setBusy(p.id);
     try {
-      await apiFetch(`/api/machines/${machineId}/pulses/${id}`, { method: 'DELETE' });
-      setPulses(ps => ps.filter(p => p.id !== id));
+      const r = await apiFetch(`/api/machines/${machineId}/pulses/${p.id}${refund ? '?refund=1' : ''}`, { method: 'DELETE' });
+      if (refund && !r.refunded) alert('Pulso eliminado, pero el reembolso falló: ' + (r.refund_error || 'error') + '\nSe va a reintentar automáticamente.');
+      setPulses(ps => ps.filter(x => x.id !== p.id));
     } catch (e) {
       alert('No se pudo eliminar: ' + e.message);
     } finally { setBusy(null); }
@@ -521,9 +562,9 @@ function PulsesCard({ machineId }) {
                 <div style={{ textAlign: 'right' }}>
                   <button
                     className="link-btn"
-                    title={inFlight ? 'Eliminar de la cola' : 'Borrar del historial'}
+                    title={inFlight ? 'Eliminar de la cola (con opción de devolver el pago)' : 'Borrar del historial'}
                     disabled={busy === p.id}
-                    onClick={() => remove(p.id)}
+                    onClick={() => remove(p)}
                     style={{ color: 'var(--bad)' }}
                   >
                     {Icon.trash}
@@ -538,12 +579,99 @@ function PulsesCard({ machineId }) {
   );
 }
 
+/* ---------- Machine QR Card ---------- */
+// QR físico de la máquina (el de la caja/POS de MP, para imprimir y pegar).
+// El QR impreso es siempre el mismo; el modo (fijo/dinámico) define qué ve el
+// cliente al escanear: la orden con precio cargado o el monto libre.
+function MachineQRCard({ m }) {
+  const [pos, setPos] = useState(null);
+  const [err, setErr] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setErr(null); setPos(null);
+    apiFetch(`/api/mp/pos/${m.id}`)
+      .then(d => { if (!cancelled) setPos(d); })
+      .catch(e => { if (!cancelled) setErr(e.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [m.id, m.mp_pos_id]);
+
+  const imgSrc = pos?.qr_code_base64
+    ? `data:image/png;base64,${pos.qr_code_base64}`
+    : (pos?.qr?.image || null);
+
+  const isFixed = m.qr_mode === 'fixed';
+
+  const printQR = () => {
+    if (!imgSrc) return;
+    const w = window.open('', '_blank');
+    w.document.write(`
+      <html><head><title>QR · ${m.name}</title></head>
+      <body style="display:grid;place-items:center;font-family:sans-serif">
+        <div style="text-align:center">
+          <h2 style="margin-bottom:4px">${m.name}</h2>
+          <p style="margin-top:0;color:#555">${isFixed ? `Precio fijo: $${m.qr_fixed_amount}` : 'Escaneá e ingresá el monto'}</p>
+          <img src="${imgSrc}" style="width:340px" onload="setTimeout(()=>window.print(),300)" />
+          <p style="color:#999;font-size:12px">${m.id} · Mercado Pago</p>
+        </div>
+      </body></html>`);
+    w.document.close();
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <div className="card-title" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>{Icon.qr} QR de la máquina</div>
+          <div className="card-sub">El código que se imprime y pega en el equipo.</div>
+        </div>
+        <span className={'spill ' + (isFixed ? 'ok' : 'off')}>
+          {isFixed ? `Precio fijo · $${m.qr_fixed_amount}` : 'Monto libre'}
+        </span>
+      </div>
+      <div className="card-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+        {loading ? (
+          <div style={{ padding: 24, color: 'var(--ink-4)', fontSize: 13 }}>Cargando QR…</div>
+        ) : err ? (
+          <div style={{ padding: 18, textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
+            {err.includes('Sin POS') || err.includes('no_pos')
+              ? <>Esta máquina no tiene caja QR de MP todavía.<br /><span style={{ fontSize: 12 }}>Tageala desde la card "Tageo MP" para generar su QR.</span></>
+              : <>No se pudo cargar el QR: {err}</>}
+          </div>
+        ) : (
+          <>
+            <div style={{ borderRadius: 12, border: '1px solid var(--line-2)', padding: 12, background: '#fff' }}>
+              {imgSrc
+                ? <img src={imgSrc} alt={`QR de ${m.name}`} style={{ display: 'block', width: 190, height: 190 }} />
+                : <div style={{ width: 190, height: 190, display: 'grid', placeItems: 'center', color: 'var(--ink-4)', fontSize: 12 }}>Sin imagen QR</div>}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
+              {isFixed
+                ? <>Al escanear, el cliente ve <strong>${m.qr_fixed_amount}</strong> ya cargado.</>
+                : <>Al escanear, el cliente ingresa el monto que quiere pagar.</>}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" onClick={printQR} disabled={!imgSrc}>{Icon.download} Imprimir</button>
+              {imgSrc && (
+                <a className="btn" href={imgSrc} download={`qr_${m.id}.png`} target="_blank" rel="noreferrer">
+                  {Icon.qr} Descargar PNG
+                </a>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Tageo Card ---------- */
 function TageoCard({ m, onRefresh }) {
-  const [mode, setMode] = useState(null); // 'store' | 'point' | 'qr' | null
+  const [mode, setMode] = useState(null); // 'store' | 'qr' | null
   const [stores, setStores] = useState(null);
   const [allPos, setAllPos] = useState(null);
-  const [pointInput, setPointInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -578,14 +706,6 @@ function TageoCard({ m, onRefresh }) {
     finally { setBusy(false); }
   };
 
-  const savePoint = async () => {
-    if (!pointInput.trim()) return;
-    setBusy(true); setErr('');
-    try { await save({ terminal_id: pointInput.trim() }); setMode(null); }
-    catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
-  };
-
   const linkPOS = async (pos) => {
     setBusy(true); setErr('');
     try {
@@ -612,11 +732,35 @@ function TageoCard({ m, onRefresh }) {
       <div className="card-head">
         <div>
           <div className="card-title">Tageo · Mercado Pago</div>
-          <div className="card-sub">Vincular local, terminal Point y QR</div>
+          <div className="card-sub">Vincular local y caja QR</div>
         </div>
-        {mode && (
-          <button className="link-btn" onClick={() => { setMode(null); setErr(''); }}>Cancelar</button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="info-hint" tabIndex={0}>
+            {Icon.help || '?'} ¿Qué es esto?
+            <span className="info-tip">
+              {m.mp_store_name && m.pos_id ? (
+                <>
+                  Esta máquina y su QR están vinculados al local <strong>{m.mp_store_name}</strong> y
+                  a la caja <strong>{m.pos_id}</strong> de Mercado Pago. Por eso, cada pago que se
+                  escanea acá se acredita en esa cuenta y queda asociado a esta máquina.
+                  Cuando quieras, podés entrar a Mercado Pago: ahí vas a ver el dinero acreditado y,
+                  con estos mismos nombres, a qué local y caja corresponde.
+                </>
+              ) : (
+                <>
+                  Acá asociás esta máquina a un local y a una caja (QR) de tu cuenta de Mercado Pago.
+                  Una vez vinculada, cada pago escaneado se acredita en esa cuenta y queda
+                  identificado con esta máquina.
+                  Después, entrando a Mercado Pago, vas a poder ver el dinero acreditado y a qué
+                  local y caja pertenece —con estos mismos nombres.
+                </>
+              )}
+            </span>
+          </span>
+          {mode && (
+            <button className="link-btn" onClick={() => { setMode(null); setErr(''); }}>Cancelar</button>
+          )}
+        </div>
       </div>
       <div className="card-body">
 
@@ -654,38 +798,8 @@ function TageoCard({ m, onRefresh }) {
           </div>
         </div>
 
-        {/* Point */}
-        <div className="kv">
-          <span className="k">Terminal Point</span>
-          <div className="v">
-            {m.terminal_id && mode !== 'point' ? (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span className="tag point" style={{ fontSize: 11.5 }}>{Icon.card} {m.terminal_id}</span>
-                <button className="link-btn" onClick={() => { setPointInput(m.terminal_id); setMode('point'); }}>editar</button>
-              </div>
-            ) : mode === 'point' ? (
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  autoFocus
-                  value={pointInput}
-                  onChange={e => setPointInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && savePoint()}
-                  placeholder="ID del dispositivo (impreso en el Point)"
-                  style={{ flex: 1, border: '1px solid var(--line-active)', borderRadius: 6, padding: '5px 8px', fontFamily: 'Geist Mono, monospace', fontSize: 12, outline: 0 }}
-                />
-                <button className="btn primary" style={{ padding: '4px 12px', fontSize: 12 }}
-                  onClick={savePoint} disabled={busy || !pointInput.trim()}>
-                  {busy ? '…' : 'Guardar'}
-                </button>
-              </div>
-            ) : (
-              <button className="filter-btn" style={{ width: '100%', justifyContent: 'center' }}
-                onClick={() => { setPointInput(''); setMode('point'); }}>
-                {Icon.plus} Vincular Point
-              </button>
-            )}
-          </div>
-        </div>
+        {/* Terminal Point oculto hasta tener los posnet físicos (Fase 2).
+            El campo terminal_id sigue en la BD/API; solo se quitó de la UI. */}
 
         {/* QR */}
         <div className="kv">
@@ -723,15 +837,6 @@ function TageoCard({ m, onRefresh }) {
           </div>
         </div>
 
-        {/* Webhook */}
-        <div className="kv">
-          <span className="k">Webhook</span>
-          <div className="v">
-            <span className="spill ok">{Icon.check} 200 OK</span>
-            <span style={{ marginLeft: 6, fontSize: 11.5, color: 'var(--ink-3)' }} className="mono">recibiendo</span>
-          </div>
-        </div>
-
         {err && <div style={{ fontSize: 12, color: 'var(--bad)', marginTop: 8 }}>{err}</div>}
       </div>
     </div>
@@ -739,7 +844,7 @@ function TageoCard({ m, onRefresh }) {
 }
 
 /* ---------- Machine Detail View ---------- */
-function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, onRefresh }) {
+function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDelete }) {
   const m = useMemo(() => machines.find(x => x.id === id) || machines[0], [machines, id]);
 
   const [editMode, setEditMode] = useState(false);
@@ -750,6 +855,8 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
   const [wifiSsid, setWifiSsid] = useState(m?.wifi_ssid ?? "");
   const [wifiUser, setWifiUser] = useState(m?.wifi_user ?? "");
   const [wifiPassword, setWifiPassword] = useState(m?.wifi_password ?? "");
+  const [qrMode, setQrMode] = useState(m?.qr_mode ?? "dynamic");
+  const [qrFixedAmount, setQrFixedAmount] = useState(m?.qr_fixed_amount ?? "");
   const [showWifiPass, setShowWifiPass] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [tab, setTab] = useState("config");
@@ -766,6 +873,8 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
       setWifiSsid(m.wifi_ssid ?? "");
       setWifiUser(m.wifi_user ?? "");
       setWifiPassword(m.wifi_password ?? "");
+      setQrMode(m.qr_mode ?? "dynamic");
+      setQrFixedAmount(m.qr_fixed_amount ?? "");
     }
   }, [m, editMode]);
 
@@ -786,6 +895,10 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
   };
 
   const saveConfiguration = () => {
+    if (qrMode === "fixed" && (!Number.isInteger(Number(qrFixedAmount)) || Number(qrFixedAmount) < 15)) {
+      alert("Para precio fijo ingresá un valor entero de al menos $15 (mínimo de Mercado Pago).");
+      return;
+    }
     onUpdateMachine(m.id, {
       pulse_value: Number(pulseValue) || 0,
       pulse_duration_ms: Number(pulseDuration) || 0,
@@ -794,9 +907,16 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
       wifi_ssid: wifiSsid.trim(),
       wifi_user: wifiUser.trim(),
       wifi_password: wifiPassword,
+      qr_mode: qrMode,
+      ...(qrMode === "fixed" ? { qr_fixed_amount: Number(qrFixedAmount) } : {}),
     });
     setShowWifiPass(false);
     setEditMode(false);
+  };
+
+  const handleDelete = () => {
+    if (!confirm(`¿Eliminar la máquina "${m.name}" (${m.id})?\n\nSe borran sus pagos, pulsos y eventos del sistema. La caja en Mercado Pago no se toca. Esta acción no se puede deshacer.`)) return;
+    onDelete(m.id);
   };
 
   const regenerateApiKey = () => {
@@ -835,7 +955,7 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
           </div>
         </div>
         <div className="detail-actions">
-          <button className="btn" onClick={() => onUpdateMachine(m.id, { poll: 1 })}>{Icon.refresh} Refrescar</button>
+          <button className="btn" onClick={onRefresh}>{Icon.refresh} Refrescar</button>
           <button className="btn" onClick={toggleStatus}>
             {m.status === "active" ? (
               <><span style={{display:"inline-flex",alignItems:"center",marginRight:4}}>{Icon.pause}</span>Poner en mantenimiento</>
@@ -847,6 +967,11 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
             <button className="btn primary" onClick={saveConfiguration}>{Icon.check} Guardar configuración</button>
           ) : (
             <button className="btn primary" onClick={() => setEditMode(true)}>{Icon.edit} Editar configuración</button>
+          )}
+          {!editMode && (
+            <button className="danger" onClick={handleDelete} title="Eliminar esta máquina">
+              {Icon.trash} Eliminar
+            </button>
           )}
         </div>
       </div>
@@ -891,7 +1016,13 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
         <button className={tab === "eventos" ? "on" : ""} onClick={() => setTab("eventos")}>Eventos</button>
       </div>
 
-      {tab === "pagos" && <PaymentsCard machineId={m.id} />}
+      {tab === "pagos" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Tageo MP */}
+          <TageoCard m={m} onRefresh={onRefresh} />
+          <PaymentsCard machineId={m.id} />
+        </div>
+      )}
 
       {tab === "pulsos" && <PulsesCard machineId={m.id} />}
 
@@ -902,106 +1033,53 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
         {/* LEFT column */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
-          {/* Cliente */}
-          <div className="card">
-            <div className="card-head">
-              <div>
-                <div className="card-title" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>{Icon.building} Cliente</div>
-                <div className="card-sub">Operador dueño de la máquina.</div>
-              </div>
-            </div>
-            <div className="card-body">
-              <div className="form-field">
-                <label>Cliente asociado</label>
-                <select
-                  value={m.client_id || ""}
-                  onChange={(e) => onUpdateMachine(m.id, { client_id: e.target.value || null })}
-                >
-                  <option value="">— Sin cliente —</option>
-                  {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-            </div>
-          </div>
+          {/* La máquina pertenece a la organización activa (selector del topbar);
+              no hay traspasos de máquinas entre clientes. */}
 
-          {/* WiFi — propia de la máquina; el Arduino la poolea para conectarse.
-              Solo editable en modo edición; se guarda con "Guardar configuración". */}
-          <div className="card">
-            <div className="card-head">
-              <div>
-                <div className="card-title" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>{Icon.wifi} Red WiFi</div>
-                <div className="card-sub">La red que el Arduino de esta máquina poolea para conectarse.</div>
-              </div>
-            </div>
-            <div className="card-body">
-              <div className="kv">
-                <span className="k">SSID</span>
-                <div className="v v-edit">
-                  <input
-                    type="text"
-                    value={wifiSsid}
-                    onChange={(e) => setWifiSsid(e.target.value)}
-                    disabled={!editMode}
-                    placeholder={editMode ? "Ej: HospitalGuest" : "—"}
-                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
-                  />
-                </div>
-              </div>
-              <div className="kv">
-                <span className="k">Usuario</span>
-                <div className="v v-edit">
-                  <input
-                    type="text"
-                    value={wifiUser}
-                    onChange={(e) => setWifiUser(e.target.value)}
-                    disabled={!editMode}
-                    placeholder={editMode ? "Opcional — solo WPA-Enterprise" : "—"}
-                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
-                  />
-                </div>
-              </div>
-              <div className="kv">
-                <span className="k">Contraseña</span>
-                <div className="v v-edit">
-                  <input
-                    type={showWifiPass ? "text" : "password"}
-                    value={wifiPassword}
-                    onChange={(e) => setWifiPassword(e.target.value)}
-                    disabled={!editMode}
-                    placeholder={editMode ? "••••••••" : "—"}
-                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
-                  />
-                  {editMode && (
-                    <button
-                      type="button"
-                      className="link-btn"
-                      onClick={() => setShowWifiPass(v => !v)}
-                      style={{ marginLeft: 6, fontSize: 11 }}
-                    >
-                      {showWifiPass ? "ocultar" : "ver"}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Tageo MP */}
-          <TageoCard m={m} onRefresh={onRefresh} />
-
-        </div>
-
-        {/* RIGHT column */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* Configuración */}
+          {/* Configuración (precios y pulsos) */}
           <div className="card">
             <div className="card-head">
               <div>
                 <div className="card-title">Configuración</div>
-                <div className="card-sub">Valor del pulso por máquina</div>
+                <div className="card-sub">Precio del QR y valor del pulso por máquina</div>
               </div>
             </div>
             <div className="card-body">
+              {/* Precio del QR de MP: toggle. ON = fijo (el QR queda cargado con
+                  el valor); OFF = dinámico (el cliente tipea el monto). */}
+              <div className="kv">
+                <span className="k">Precio fijo del QR</span>
+                <div className="v v-edit" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <button
+                    type="button"
+                    className={"switch " + (qrMode === "fixed" ? "on" : "")}
+                    onClick={() => setQrMode(qrMode === "fixed" ? "dynamic" : "fixed")}
+                    disabled={!editMode}
+                    title={qrMode === "fixed" ? "Fijo — el QR muestra el precio cargado" : "Libre — el cliente elige el monto"}
+                  />
+                  <span style={{ fontSize: 11, color: "var(--ink-4)" }}>
+                    {qrMode === "fixed" ? "Fijo" : "Libre (lo elige el cliente)"}
+                  </span>
+                </div>
+              </div>
+              {qrMode === "fixed" && (
+                <div className="kv">
+                  <span className="k">Valor fijo</span>
+                  <div className="v v-edit">
+                    <span style={{ color: "var(--ink-4)" }}>$</span>
+                    <input
+                      type="number"
+                      min="15"
+                      value={qrFixedAmount}
+                      onChange={(e) => setQrFixedAmount(e.target.value)}
+                      disabled={!editMode}
+                      placeholder="Ej: 500"
+                      style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
+                    />
+                    <span style={{ color: "var(--ink-4)", fontSize: 11 }}>ARS</span>
+                  </div>
+                </div>
+              )}
               <div className="kv">
                 <span className="k">Valor Pulso</span>
                 <div className="v v-edit">
@@ -1044,7 +1122,63 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
               </div>
             </div>
           </div>
-          
+
+          {/* QR imprimible de la máquina */}
+          <MachineQRCard m={m} />
+
+        </div>
+
+        {/* RIGHT column */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* WiFi — propia de la máquina; el Arduino la poolea para conectarse.
+              Solo editable en modo edición; se guarda con "Guardar configuración". */}
+          <div className="card">
+            <div className="card-head">
+              <div>
+                <div className="card-title" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>{Icon.wifi} Red WiFi</div>
+                <div className="card-sub">La red que el Arduino de esta máquina poolea para conectarse.</div>
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="kv">
+                <span className="k">Nombre WiFi</span>
+                <div className="v v-edit">
+                  <input
+                    type="text"
+                    value={wifiSsid}
+                    onChange={(e) => setWifiSsid(e.target.value)}
+                    disabled={!editMode}
+                    placeholder={editMode ? "Ej: HospitalGuest" : "—"}
+                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
+                  />
+                </div>
+              </div>
+              <div className="kv">
+                <span className="k">Contraseña</span>
+                <div className="v v-edit">
+                  <input
+                    type={showWifiPass ? "text" : "password"}
+                    value={wifiPassword}
+                    onChange={(e) => setWifiPassword(e.target.value)}
+                    disabled={!editMode}
+                    placeholder={editMode ? "••••••••" : "—"}
+                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
+                  />
+                  {editMode && (
+                    <button
+                      type="button"
+                      className="link-btn"
+                      onClick={() => setShowWifiPass(v => !v)}
+                      style={{ marginLeft: 6, fontSize: 11 }}
+                    >
+                      {showWifiPass ? "ocultar" : "ver"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Firmware */}
           <div className="card">
             <div className="card-head">
@@ -1055,23 +1189,17 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
             </div>
             <div className="card-body">
               <div className="kv">
-                <span className="k">Arduino ID</span>
+                <span className="k">Serial de placa <span style={{ color: "var(--ink-4)", fontWeight: 400 }}>· ID Arduino</span></span>
                 <div className="v v-edit">
                   <input
                     type="text"
                     value={arduinoId}
                     onChange={(e) => setArduinoId(e.target.value)}
                     disabled={!editMode}
-                    placeholder="ej: ARD-7F3A9C"
+                    placeholder="ej: 3C71BF4A2B08"
                     className="mono"
                     style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
                   />
-                </div>
-              </div>
-              <div className="kv">
-                <span className="k">Serial placa</span>
-                <div className="v mono">
-                  {m.device_serial ? m.device_serial : <span style={{ color: "var(--ink-4)", fontStyle: "italic", fontFamily: "inherit" }}>no configurado</span>}
                 </div>
               </div>
               <div className="kv">
@@ -1106,91 +1234,31 @@ function MachineDetail({ id, machines, clients = [], onBack, onUpdateMachine, on
 }
 
 /* ---------- New Machine Modal ---------- */
-function NewMachineModal({ onClose, onAdd, clients = [] }) {
+function NewMachineModal({ onClose, onAdd }) {
+  // La máquina nueva queda en la organización activa (no hay traspasos).
+  const { orgId } = useAuth();
   const [name, setName] = useState("");
-  const [clientId, setClientId] = useState("");
   const [model, setModel] = useState("");
   const [location, setLocation] = useState("");
   const [address, setAddress] = useState("");
   const [serial, setSerial] = useState("");
-  const [storeId, setStoreId] = useState("");
-  const [selectedPOS, setSelectedPOS] = useState(null);
 
-  const [mpStatus, setMpStatus] = useState(null); // null=cargando
-  const [mpStores, setMpStores] = useState([]);
-  const [allPOS, setAllPOS] = useState([]);       // todos los POS
-  const [storePOS, setStorePOS] = useState({});   // { storeId: [pos, ...] } — para mpStores path
-  const [loadingPOS, setLoadingPOS] = useState({});
-  const [storeNames, setStoreNames] = useState({}); // { storeId: nombre } — para POS agrupados
-
-  useEffect(() => {
-    async function load() {
-      try {
-        const status = await apiFetch('/api/mp/status');
-        setMpStatus(status);
-        if (!status.connected) return;
-        const [stores, pos] = await Promise.all([
-          apiFetch('/api/mp/stores'),
-          apiFetch('/api/mp/pos'),
-        ]);
-        setMpStores(stores);
-        setAllPOS(pos);
-        // Si la lista de stores falla pero los POS tienen store_id, buscar nombres individuales
-        if (stores.length === 0 && pos.length > 0) {
-          const uniqueIds = [...new Set(pos.map(p => p.store_id).filter(Boolean).map(String))];
-          const names = {};
-          await Promise.all(uniqueIds.map(async sid => {
-            try {
-              const store = await apiFetch(`/api/mp/stores/${sid}`);
-              names[sid] = store.name || `Local ${sid}`;
-            } catch {
-              names[sid] = `Local ${sid}`;
-            }
-          }));
-          setStoreNames(names);
-        }
-      } catch {
-        setMpStatus({ connected: false });
-      }
-    }
-    load();
-  }, []);
-
-  async function onSelectStore(store) {
-    const sid = String(store.id);
-    setStoreId(sid);
-    setSelectedPOS(null);
-    if (storePOS[sid] !== undefined) return;
-    setLoadingPOS(p => ({ ...p, [sid]: true }));
-    try {
-      const pos = await apiFetch(`/api/mp/pos?storeId=${sid}`);
-      setStorePOS(p => ({ ...p, [sid]: pos }));
-    } catch {
-      setStorePOS(p => ({ ...p, [sid]: [] }));
-    } finally {
-      setLoadingPOS(p => ({ ...p, [sid]: false }));
-    }
-  }
-
+  // La caja de MP ya no se elige a mano: al crear la máquina, el backend genera
+  // (o reutiliza) el local default y le crea una caja propia, y la asocia sola.
   const submit = (e) => {
     e.preventDefault();
     if (!name.trim()) return;
     const randHex = (n) => Array.from({length: n}, () => Math.floor(Math.random() * 16).toString(16)).join('');
     const machineNum = String(Math.floor(Math.random() * 900) + 100);
     const id = "machine_" + machineNum;
-    const store = mpStores.find(s => String(s.id) === storeId) || null;
     onAdd({
       id,
       name: name.trim(),
       model: model.trim() || "—",
       location: location.trim() || "—",
       address: address.trim() || "—",
-      device_serial: serial.trim(),
-      client_id: clientId || null,
-      mp_store_id: storeId || null,
-      mp_store_name: store?.name || null,
-      pos_id: selectedPOS ? String(selectedPOS.id) : "",
-      mp_pos_id: selectedPOS ? String(selectedPOS.id) : null,
+      arduino_id: serial.trim() || null,
+      client_id: orgId || null,
       terminal_id: "",
       pulse_value: 250, pulse_multiplier: 1.0, min_payment: 200,
       channels: [null, null, null, null, null],
@@ -1204,16 +1272,13 @@ function NewMachineModal({ onClose, onAdd, clients = [] }) {
     onClose();
   };
 
-  const mpLoading = mpStatus === null;
-  const mpConnected = mpStatus?.connected === true;
-
   return (
     <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-head">
           <div>
             <div className="modal-title">Nueva máquina</div>
-            <div className="modal-sub">Registrá el equipo, asociá su placa y una caja de Mercado Pago</div>
+            <div className="modal-sub">Registrá el equipo y su placa — la caja de Mercado Pago se genera sola</div>
           </div>
           <button className="modal-close" onClick={onClose}>{Icon.x}</button>
         </div>
@@ -1262,21 +1327,13 @@ function NewMachineModal({ onClose, onAdd, clients = [] }) {
                   />
                 </div>
               </div>
-              <div className="form-field">
-                <label>Cliente</label>
-                <select value={clientId} onChange={e => setClientId(e.target.value)}>
-                  <option value="">— Sin cliente —</option>
-                  {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-                <div className="form-hint">Define la red WiFi que el Arduino va a poolear para conectarse.</div>
-              </div>
             </div>
 
             {/* Placa */}
             <div className="form-section">
               <div className="form-section-label">Placa · Arduino / ESP32</div>
               <div className="form-field">
-                <label>ID serial de placa</label>
+                <label>Serial de placa <span className="req">·</span> ID Arduino</label>
                 <div className="input-wrap">
                   <span className="lead-icon">{Icon.cpu}</span>
                   <input
@@ -1286,154 +1343,24 @@ function NewMachineModal({ onClose, onAdd, clients = [] }) {
                     placeholder="ej: 3C71BF4A2B08"
                   />
                 </div>
-                <div className="form-hint">El chip ID del ESP32 que el Arduino envía en cada polling para identificarse al servidor.</div>
+                <div className="form-hint">El chip ID del ESP32. Es el serial de la placa <strong>y a la vez el identificador</strong> que el Arduino manda en cada request para que el servidor sepa de qué máquina es.</div>
               </div>
             </div>
 
-            {/* Local / Caja MP */}
+            {/* Caja MP — automática */}
             <div className="form-section">
               <div className="form-section-label">Caja · Mercado Pago</div>
-              {mpLoading ? (
-                <div className="form-hint">Conectando con Mercado Pago…</div>
-              ) : !mpConnected ? (
-                <div className="mp-notice">
-                  {Icon.alert}
-                  <div>
-                    <div className="mn-t">Mercado Pago no conectado</div>
-                    <div className="mn-s">Verificá que el servidor esté corriendo y MP_ACCESS_TOKEN esté configurado.</div>
+              <div className="mp-notice">
+                {Icon.qr || Icon.alert}
+                <div>
+                  <div className="mn-t">Caja automática</div>
+                  <div className="mn-s">
+                    Al crear la máquina se genera una caja QR propia dentro del local
+                    de Tecnovend y se asocia sola. No hay que elegir nada — el QR queda
+                    listo en la solapa <strong>Pagos</strong> de la máquina.
                   </div>
                 </div>
-              ) : mpStores.length === 0 && allPOS.length === 0 ? (
-                <div className="mp-notice">
-                  {Icon.alert}
-                  <div>
-                    <div className="mn-t">Sin cajas en MP</div>
-                    <div className="mn-s">
-                      {mpStatus?.oauth
-                        ? 'La cuenta conectada no tiene cajas aún. Podés crearlas desde el detalle de cada máquina.'
-                        : <><a href={API_BASE + '/api/mp/auth'} style={{color:'var(--brand)',fontWeight:500}}>Conectá la cuenta MP de tu socio →</a></>
-                      }
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="store-selector">
-                    <div
-                      className={"store-opt " + (!storeId && !selectedPOS ? "on" : "")}
-                      onClick={() => { setStoreId(""); setSelectedPOS(null); }}
-                    >
-                      <div className="store-radio" />
-                      <div className="store-info">
-                        <span className="store-n">Sin caja asignada</span>
-                        <span className="store-a">Podés configurarlo después desde el detalle de la máquina</span>
-                      </div>
-                    </div>
-
-                    {/* Caso A: la cuenta tiene stores → selector de dos niveles (store → POS) */}
-                    {mpStores.map(store => {
-                      const sid = String(store.id);
-                      const isOpen = storeId === sid;
-                      const posList = storePOS[sid];
-                      return (
-                        <div key={sid}>
-                          <div
-                            className={"store-opt " + (isOpen ? "on" : "")}
-                            onClick={() => onSelectStore(store)}
-                          >
-                            <div className="store-radio" />
-                            <div className="store-info">
-                              <span className="store-n">{store.name}</span>
-                              <span className="store-a">{store.location?.address_line || store.external_id}</span>
-                            </div>
-                          </div>
-                          {isOpen && (
-                            <div className="pos-indent">
-                              {loadingPOS[sid] ? (
-                                <div className="form-hint" style={{ paddingLeft: 28, paddingTop: 8 }}>Cargando cajas…</div>
-                              ) : !posList || posList.length === 0 ? (
-                                <div className="form-hint" style={{ paddingLeft: 28, paddingTop: 8 }}>Sin cajas en este local</div>
-                              ) : posList.map(pos => (
-                                <div
-                                  key={pos.id}
-                                  className={"store-opt pos-opt " + (selectedPOS?.id === pos.id ? "on" : "")}
-                                  onClick={() => setSelectedPOS(pos)}
-                                >
-                                  <div className="store-radio" />
-                                  <div className="store-info">
-                                    <span className="store-n">{pos.name || pos.external_id}</span>
-                                    <span className="store-a mono" style={{ fontSize: 11 }}>ID: {pos.id}</span>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {/* Caso B: la cuenta no tiene stores en el listado pero los POS tienen store_id → agrupar */}
-                    {mpStores.length === 0 && (() => {
-                      const groups = {};
-                      const noStore = [];
-                      for (const pos of allPOS) {
-                        const sid = pos.store_id ? String(pos.store_id) : null;
-                        if (sid) { (groups[sid] = groups[sid] || []).push(pos); }
-                        else { noStore.push(pos); }
-                      }
-                      return (
-                        <>
-                          {noStore.map(pos => (
-                            <div key={pos.id} className={"store-opt " + (selectedPOS?.id === pos.id ? "on" : "")} onClick={() => { setSelectedPOS(pos); setStoreId(""); }}>
-                              <div className="store-radio" />
-                              <div className="store-info">
-                                <span className="store-n">{pos.name || pos.external_id}</span>
-                                <span className="store-a mono" style={{ fontSize: 11 }}>ID: {pos.id}</span>
-                              </div>
-                            </div>
-                          ))}
-                          {Object.entries(groups).map(([sid, posList]) => {
-                            const isOpen = storeId === sid;
-                            const storeName = storeNames[sid] || `Local ${sid}`;
-                            return (
-                              <div key={sid}>
-                                <div
-                                  className={"store-opt " + (isOpen ? "on" : "")}
-                                  onClick={() => { setStoreId(isOpen ? "" : sid); setSelectedPOS(null); }}
-                                >
-                                  <div className="store-radio" />
-                                  <div className="store-info">
-                                    <span className="store-n">{storeName}</span>
-                                    <span className="store-a">{posList.length} caja{posList.length !== 1 ? 's' : ''}</span>
-                                  </div>
-                                </div>
-                                {isOpen && (
-                                  <div className="pos-indent">
-                                    {posList.map(pos => (
-                                      <div key={pos.id} className={"store-opt pos-opt " + (selectedPOS?.id === pos.id ? "on" : "")} onClick={() => setSelectedPOS(pos)}>
-                                        <div className="store-radio" />
-                                        <div className="store-info">
-                                          <span className="store-n">{pos.name || pos.external_id}</span>
-                                          <span className="store-a mono" style={{ fontSize: 11 }}>ID: {pos.id}</span>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </>
-                      );
-                    })()}
-                  </div>
-                  <div className="form-hint">
-                    {selectedPOS
-                      ? `Caja seleccionada: ${selectedPOS.name || selectedPOS.external_id} — los pagos de esta caja activarán esta máquina.`
-                      : 'Seleccioná un local y luego la caja (QR) de Mercado Pago para asociar pagos a esta máquina.'}
-                  </div>
-                </>
-              )}
+              </div>
             </div>
 
           </div>
@@ -1450,16 +1377,60 @@ function NewMachineModal({ onClose, onAdd, clients = [] }) {
   );
 }
 
+/* ---------- Connect Mercado Pago Modal (gate de alta) ---------- */
+// Si el cliente activo no conectó su cuenta de MP, no se puede crear una máquina
+// (la caja vive en la cuenta del cliente). Este pop-up lanza el OAuth de MP.
+function ConnectMPModal({ orgId, onClose }) {
+  const connect = () => {
+    if (!orgId) { alert('Seleccioná un cliente antes de conectar Mercado Pago.'); return; }
+    // Navegación de página completa al OAuth de MP (vuelve a /?mp_connected=1).
+    window.location.href = `${API_BASE}/api/mp/auth?org=${encodeURIComponent(orgId)}`;
+  };
+  return (
+    <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 460 }}>
+        <div className="modal-head">
+          <div>
+            <div className="modal-title">Conectá Mercado Pago</div>
+            <div className="modal-sub">Necesario para crear máquinas de este cliente</div>
+          </div>
+          <button className="modal-close" onClick={onClose}>{Icon.x}</button>
+        </div>
+        <div className="modal-body">
+          <div className="mp-notice">
+            {Icon.alert}
+            <div>
+              <div className="mn-t">Este cliente todavía no conectó su cuenta de Mercado Pago</div>
+              <div className="mn-s">
+                La caja QR de cada máquina se crea dentro de la cuenta de MP del cliente.
+                Conectá la cuenta una vez y después podés dar de alta todas las máquinas que quieras.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button type="button" className="btn" onClick={onClose}>Cancelar</button>
+          <button type="button" className="btn primary" onClick={connect}>
+            {Icon.qr || Icon.plus} Conectar Mercado Pago
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Main Component with State & Router ---------- */
 export default function Maquinas() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { orgId } = useAuth();
 
   const [machines, setMachines] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [envProd, setEnvProd] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
+  const [showConnectMP, setShowConnectMP] = useState(false);
 
   const clientsById = useMemo(
     () => Object.fromEntries(clients.map(c => [c.id, c.name])),
@@ -1487,10 +1458,17 @@ export default function Maquinas() {
 
   const addMachine = async (newMachine) => {
     try {
-      await apiFetch('/api/machines', {
+      const r = await apiFetch('/api/machines', {
         method: 'POST',
         body: JSON.stringify(newMachine),
       });
+      if (r?.mp_error) {
+        alert(
+          'La máquina se creó, pero no se pudo generar su caja en Mercado Pago:\n\n' +
+          r.mp_error +
+          '\n\nPodés reintentar desde el detalle de la máquina (solapa Pagos → "Crear nuevo POS").'
+        );
+      }
       const data = await apiFetch('/api/machines');
       setMachines(data.map(normalizeMachine));
     } catch (e) {
@@ -1501,6 +1479,28 @@ export default function Maquinas() {
   const refreshMachines = async () => {
     const data = await apiFetch('/api/machines');
     setMachines(data.map(normalizeMachine));
+  };
+
+  const deleteMachine = async (machineId) => {
+    try {
+      await apiFetch(`/api/machines/${machineId}`, { method: 'DELETE' });
+      setMachines(prev => prev.filter(m => m.id !== machineId));
+      navigate('/maquinas');
+    } catch (e) {
+      alert('Error al eliminar máquina: ' + e.message);
+    }
+  };
+
+  // Gate de alta: solo se abre el alta si el cliente activo tiene MP conectado;
+  // si no, primero el pop-up para conectar la cuenta.
+  const handleNew = async () => {
+    try {
+      const status = await apiFetch('/api/mp/status');
+      if (status?.connected) setShowNewModal(true);
+      else setShowConnectMP(true);
+    } catch {
+      setShowConnectMP(true);
+    }
   };
 
   const updateMachine = async (machineId, updatedFields) => {
@@ -1534,10 +1534,10 @@ export default function Maquinas() {
           <MachineDetail
             id={id}
             machines={machines}
-            clients={clients}
             onBack={() => navigate('/maquinas')}
             onUpdateMachine={updateMachine}
             onRefresh={refreshMachines}
+            onDelete={deleteMachine}
           />
         ) : loading ? (
           <div style={{ padding: 40, color: 'var(--ink-3)' }}>Cargando máquinas…</div>
@@ -1546,14 +1546,19 @@ export default function Maquinas() {
             machines={machines}
             clientsById={clientsById}
             onOpen={(mid) => navigate(`/maquinas/${mid}`)}
-            onNew={() => setShowNewModal(true)}
+            onNew={handleNew}
           />
         )}
         {showNewModal && (
           <NewMachineModal
-            clients={clients}
             onClose={() => setShowNewModal(false)}
             onAdd={addMachine}
+          />
+        )}
+        {showConnectMP && (
+          <ConnectMPModal
+            orgId={orgId}
+            onClose={() => setShowConnectMP(false)}
           />
         )}
       </div>

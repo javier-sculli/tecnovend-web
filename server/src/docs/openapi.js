@@ -18,8 +18,8 @@ const Machine = {
     location: { type: 'string', nullable: true },
     address: { type: 'string', nullable: true },
     model: { type: 'string', nullable: true },
-    device_serial: { type: 'string', nullable: true },
-    arduino_id: { type: 'string', nullable: true, example: 'ARD-7F3A9C', description: 'ID alfanumérico del Arduino; el firmware lo usa en todos los endpoints /arduino/* para identificar la máquina' },
+    arduino_id: { type: 'string', nullable: true, example: '3C71BF4A2B08', description: 'Serial de la placa = identificador del Arduino. El firmware lo manda en todos los endpoints /arduino/* para identificar la máquina. `device_serial` guarda el mismo valor (son lo mismo).' },
+    device_serial: { type: 'string', nullable: true, description: 'Espejo de `arduino_id` (el serial de placa). Se mantienen iguales.' },
     client_id: { type: 'string', nullable: true, example: 'cli_a1b2c3' },
     pos_id: { type: 'string', nullable: true, description: 'ID del QR/caja de MP (Fase 1)' },
     terminal_id: { type: 'string', nullable: true, description: 'ID del Point de MP (Fase 2)' },
@@ -32,6 +32,8 @@ const Machine = {
     wifi_ssid: { type: 'string', nullable: true, description: 'Red WiFi propia de la máquina (la lee el firmware en /arduino/config)' },
     wifi_user: { type: 'string', nullable: true, description: 'Usuario WiFi (WPA-Enterprise), opcional' },
     wifi_password: { type: 'string', nullable: true, description: 'Clave WiFi' },
+    qr_mode: { type: 'string', enum: ['dynamic', 'fixed'], description: "Precio del QR de MP: 'dynamic' = el cliente tipea el monto; 'fixed' = el QR queda cargado con una orden por qr_fixed_amount (se re-arma tras cada pago)" },
+    qr_fixed_amount: { type: 'integer', nullable: true, minimum: 15, description: 'ARS del precio fijo del QR (requerido si qr_mode=fixed; mínimo $15 de MP)' },
     channels_config: { type: 'array', items: { type: 'object' } },
     status: { type: 'string', enum: ['active', 'inactive', 'maintenance'] },
     state: {
@@ -179,7 +181,7 @@ export const openapiSpec = {
       post: {
         tags: ['Máquinas'],
         summary: 'Registrar máquina',
-        description: 'Da de alta una máquina. `id` y `name` son obligatorios. El resto de los campos son opcionales y tienen defaults (pulse_value 200, min_payment 200).',
+        description: 'Da de alta una máquina. `id` y `name` son obligatorios. El resto de los campos son opcionales y tienen defaults (pulse_value 200, min_payment 200). Al crearla, el servidor provisiona automáticamente en MP **en la cuenta del cliente** (`client_id`): usa (o crea) el local default `tv_default` y le crea una caja QR propia (`external_id` = id de la máquina), asociándola. Es best-effort: si MP falla (p.ej. el cliente no conectó su cuenta), la máquina queda creada igual y la respuesta trae `mp_error`.',
         requestBody: {
           required: true,
           content: json({
@@ -190,6 +192,7 @@ export const openapiSpec = {
               name: { type: 'string', example: 'Expendedora Hall A' },
               location: { type: 'string' },
               address: { type: 'string' },
+              arduino_id: { type: 'string', description: 'Serial de placa = identificador del Arduino. Se guarda en `arduino_id` y `device_serial` (son lo mismo). También se acepta `device_serial`.', example: '3C71BF4A2B08' },
               client_id: { type: 'string' },
               pulse_value: { type: 'integer', default: 200 },
               min_payment: { type: 'integer', default: 200 },
@@ -199,7 +202,7 @@ export const openapiSpec = {
           }),
         },
         responses: {
-          201: ok('Creada', { type: 'object', properties: { id: { type: 'string' } } }),
+          201: ok('Creada', { type: 'object', properties: { id: { type: 'string' }, mp: { type: 'object', nullable: true, description: 'Datos de la caja provisionada en MP (pos_id, mp_pos_id, store_id, qr_code…). null si la provisión falló.' }, mp_error: { type: 'string', nullable: true, description: 'Mensaje de error si no se pudo provisionar la caja en MP.' } } }),
           400: ok('Faltan id o name', Error),
         },
       },
@@ -215,10 +218,17 @@ export const openapiSpec = {
       put: {
         tags: ['Máquinas'],
         summary: 'Actualizar configuración',
-        description: 'Actualiza campos de la máquina (solo los enviados; el resto se mantiene). Principal uso desde la web: editar `pulse_value`, vincular cliente o cambiar `status`.',
+        description: 'Actualiza campos de la máquina (solo los enviados; el resto se mantiene). Principal uso desde la web: editar `pulse_value`, vincular cliente, cambiar `status` o configurar el precio del QR (`qr_mode`/`qr_fixed_amount`). Si queda en precio fijo, carga la orden en el QR y devuelve `qr_armed` (true/false según MP).',
         parameters: [idParam('ID de la máquina')],
         requestBody: { content: json({ $ref: '#/components/schemas/Machine' }) },
-        responses: { 200: ok('Actualizada', { type: 'object', properties: { ok: { type: 'boolean' } } }), 404: ok('No encontrada', Error) },
+        responses: { 200: ok('Actualizada', { type: 'object', properties: { ok: { type: 'boolean' }, qr_armed: { type: 'boolean', description: 'Solo si se tocó la config del QR: true = orden cargada en MP' } } }), 400: ok('qr_mode/qr_fixed_amount inválidos', Error), 404: ok('No encontrada', Error) },
+      },
+      delete: {
+        tags: ['Máquinas'],
+        summary: 'Eliminar máquina',
+        description: 'Borra la máquina y todo lo que cuelga de ella (pagos, pulsos y eventos). No toca la caja en Mercado Pago: el local/caja quedan en la cuenta del cliente. Acción irreversible.',
+        parameters: [idParam('ID de la máquina')],
+        responses: { 200: ok('Eliminada', { type: 'object', properties: { ok: { type: 'boolean' } } }), 404: ok('No encontrada', Error), 500: ok('Error al eliminar', Error) },
       },
     },
     '/api/machines/{id}/payments': {
@@ -237,7 +247,7 @@ export const openapiSpec = {
         description: 'Feed unificado y ordenado por fecha que junta: heartbeats, pedidos de config y avisos de servicio del firmware; ACK de pulsos confirmados; y pagos aprobados/rechazados.',
         parameters: [
           idParam('ID de la máquina'),
-          { name: 'limit', in: 'query', schema: { type: 'integer', default: 60, maximum: 200 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 60, maximum: 500 } },
         ],
         responses: { 200: ok('Eventos', { type: 'array', items: { $ref: '#/components/schemas/Event' } }) },
       },
@@ -249,7 +259,7 @@ export const openapiSpec = {
         description: 'Pulsos de la máquina, con los pendientes y entregados (en vuelo) arriba. La expiración de vencidos (más de 3 min sin ACK → `expired`, no acreditaron) la maneja un barrido periódico del servidor, no este endpoint.',
         parameters: [
           idParam('ID de la máquina'),
-          { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 200 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 500 } },
         ],
         responses: { 200: ok('Pulsos', { type: 'array', items: { $ref: '#/components/schemas/PulseQueue' } }) },
       },
@@ -315,7 +325,7 @@ export const openapiSpec = {
       get: {
         tags: ['Arduino'],
         summary: 'Polling de pulsos pendientes',
-        description: 'El firmware llama cada ~3s con su `arduino_id`. El servidor resuelve la máquina, marca el contacto como señal de vida, expira pulsos vencidos (más de 3 min sin ACK), entrega los pendientes (los pasa a `delivered`) y los devuelve. Si la máquina está **fuera de servicio** no entrega pulsos (devuelve la lista vacía). Requiere `x-api-key` si la máquina tiene clave configurada.',
+        description: 'El firmware llama cada ~3s con su `arduino_id`. El servidor resuelve la máquina, expira pulsos vencidos (más de 3 min sin ACK), entrega los pendientes (los pasa a `delivered`) y los devuelve. Si la máquina está **fuera de servicio** no entrega pulsos (devuelve la lista vacía). Requiere `x-api-key` si la máquina tiene clave configurada. **No** actualiza `last_seen_at`: la señal de vida la marca únicamente `POST /arduino/heartbeat/{arduinoId}`.',
         parameters: [arduinoIdParam, apiKeyHeader],
         responses: {
           200: ok('Pulsos pendientes', {
@@ -391,9 +401,10 @@ export const openapiSpec = {
     '/api/mp/auth': {
       get: {
         tags: ['Mercado Pago'],
-        summary: 'Iniciar OAuth',
-        description: 'Redirige al portal de Mercado Pago para autorizar la cuenta de Tecnovend. Genera y guarda un `state` anti-CSRF.',
-        responses: { 302: { description: 'Redirección a auth.mercadopago.com' } },
+        summary: 'Iniciar OAuth (por cliente)',
+        description: 'Redirige al portal de Mercado Pago para que el cliente indicado (`?org=<clientId>`) autorice SU cuenta. El local y las cajas de sus máquinas viven en esa cuenta. Genera y guarda un `state` anti-CSRF junto con el cliente que conecta.',
+        parameters: [{ name: 'org', in: 'query', required: true, schema: { type: 'string' }, description: 'client_id de la organización que conecta su cuenta MP' }],
+        responses: { 302: { description: 'Redirección a auth.mercadopago.com' }, 400: { description: 'Falta org' } },
       },
     },
     '/api/mp/auth/callback': {
@@ -411,16 +422,16 @@ export const openapiSpec = {
     '/api/mp/auth/disconnect': {
       post: {
         tags: ['Mercado Pago'],
-        summary: 'Desvincular cuenta MP',
-        description: 'Borra el access token, refresh token y expiración guardados.',
-        responses: { 200: ok('Desvinculado', { type: 'object', properties: { ok: { type: 'boolean' } } }) },
+        summary: 'Desvincular cuenta MP del cliente activo',
+        description: 'Borra la conexión MP (token + refresh + user_id) del cliente activo (header `x-org-id`).',
+        responses: { 200: ok('Desvinculado', { type: 'object', properties: { ok: { type: 'boolean' } } }), 400: ok('Falta org', Error) },
       },
     },
     '/api/mp/status': {
       get: {
         tags: ['Mercado Pago'],
-        summary: 'Estado de la conexión',
-        description: 'Indica si hay conexión activa con MP (consulta /users/me) y si el token proviene de OAuth.',
+        summary: 'Estado de la conexión (del cliente activo)',
+        description: '`connected` indica si el cliente activo (header `x-org-id`) tiene SU propia cuenta de MP conectada (no usa el token global). Lo usa el gate de alta de máquinas.',
         responses: { 200: ok('Estado', { type: 'object', properties: { connected: { type: 'boolean' }, user_id: { type: 'integer' }, oauth: { type: 'boolean' }, error: { type: 'string' } } }) },
       },
     },
@@ -440,11 +451,11 @@ export const openapiSpec = {
     },
     '/api/mp/pos/{machineId}': {
       post: {
-        tags: ['Mercado Pago'], summary: 'Crear store + POS para una máquina',
-        description: 'Crea el store y la caja (POS) en MP para la máquina y guarda `mp_pos_id`/`mp_store_id`. Devuelve el QR generado.',
+        tags: ['Mercado Pago'], summary: 'Crear (o reutilizar) la caja de una máquina',
+        description: 'Provisiona la caja (POS) de la máquina dentro del local default `tv_default` **en la cuenta MP del cliente de la máquina** (lo crea si no existe) y guarda `pos_id`/`mp_pos_id`/`mp_store_id`. Idempotente: si la máquina ya tiene su caja, la reutiliza. Devuelve el QR generado. Es la misma lógica que corre al dar de alta una máquina.',
         parameters: [machineIdParam],
         responses: {
-          200: ok('Creado', { type: 'object', properties: { ok: { type: 'boolean' }, pos_id: {}, store_id: {}, qr_code: { type: 'string' }, qr_code_base64: { type: 'string' } } }),
+          200: ok('Creado', { type: 'object', properties: { ok: { type: 'boolean' }, pos_id: {}, mp_pos_id: {}, store_id: {}, store_name: { type: 'string' }, qr_code: { type: 'string' }, qr_code_base64: { type: 'string' } } }),
           404: ok('Máquina no encontrada', Error), 500: ok('Error de MP', Error),
         },
       },

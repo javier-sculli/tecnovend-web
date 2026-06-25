@@ -1,20 +1,36 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import Dashboard from './pages/Dashboard.jsx';
-import Clientes from './pages/Clientes.jsx';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useAuth } from './auth.jsx';
+import Login from './pages/Login.jsx';
+// Dashboard y Clientes ocultos por ahora — las páginas quedan en el código
+// para reactivarlas más adelante (restaurar imports + rutas + sidebar).
+// import Dashboard from './pages/Dashboard.jsx';
+// import Clientes from './pages/Clientes.jsx';
 import Maquinas from './pages/Maquinas.jsx';
 import Pagos from './pages/Pagos.jsx';
 import QRTester from './pages/QRTester.jsx';
 
+// Gate de autenticación: sin sesión → /login (recordando a dónde iba).
+function RequireAuth({ children }) {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  if (loading) return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: 'var(--ink-3)' }}>Cargando…</div>;
+  if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
+  return children;
+}
+
 export default function App() {
+  const { user } = useAuth();
   return (
     <Routes>
-      <Route path="/" element={<Dashboard />} />
-      <Route path="/clientes" element={<Clientes />} />
-      <Route path="/clientes/:id" element={<Clientes />} />
-      <Route path="/maquinas" element={<Maquinas />} />
-      <Route path="/maquinas/:id" element={<Maquinas />} />
-      <Route path="/pagos" element={<Pagos />} />
-      <Route path="/qr-tester" element={<QRTester />} />
+      <Route path="/login" element={user ? <Navigate to="/maquinas" replace /> : <Login />} />
+      {/* Default → Máquinas (Dashboard oculto por ahora) */}
+      <Route path="/" element={<Navigate to="/maquinas" replace />} />
+      {/* <Route path="/clientes" element={<RequireAuth><Clientes /></RequireAuth>} /> */}
+      {/* <Route path="/clientes/:id" element={<RequireAuth><Clientes /></RequireAuth>} /> */}
+      <Route path="/maquinas" element={<RequireAuth><Maquinas /></RequireAuth>} />
+      <Route path="/maquinas/:id" element={<RequireAuth><Maquinas /></RequireAuth>} />
+      <Route path="/pagos" element={<RequireAuth><Pagos /></RequireAuth>} />
+      <Route path="/qr-tester" element={<RequireAuth><QRTester /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -2,10 +2,26 @@ import React, { useState, useEffect } from 'react';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
+import { apiFetch, API_BASE } from '../api.js';
+import { useAuth } from '../auth.jsx';
 
 /* ---------- Helpers ---------- */
-const ars = (n) => "$" + n.toLocaleString("es-AR", { maximumFractionDigits: 0 });
-const num = (n) => n.toLocaleString("es-AR");
+const timeAgo = (ts) => {
+  if (!ts) return 'nunca';
+  const ms = Date.now() - new Date(ts.replace(' ', 'T') + (ts.includes('Z') ? '' : 'Z')).getTime();
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `hace ${s}s`;
+  const min = Math.floor(s / 60);
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `hace ${h} h`;
+  return `hace ${Math.floor(h / 24)} d`;
+};
+
+const storeAddress = (s) =>
+  s?.location?.address_line ||
+  [s?.location?.street_name, s?.location?.street_number].filter(Boolean).join(' ') ||
+  '—';
 
 /* ============================================================
    Empty state — not connected
@@ -16,10 +32,10 @@ function EmptyState({ onConnect, connecting }) {
       <div className="left">
         <span className="eyebrow"><span className="dot"></span>Integración · Mercado Pago</span>
         <h2>Conecta Mercado Pago <span className="it">para empezar a cobrar</span></h2>
-        <p>Autorizá a Tecnovend a procesar pagos en nombre de tu cuenta. Te llevamos a Mercado Pago, te autenticás una sola vez y volvés acá con tus locales y terminales sincronizados.</p>
+        <p>Autorizá a Tecnovend a procesar pagos en nombre de tu cuenta. Te llevamos a Mercado Pago, te autenticás una sola vez y volvés acá con tus locales y cajas sincronizados.</p>
 
         <div className="perks">
-          <div className="perk">{Icon.check}<span><b>Pagos QR + Point</b> usando tus credenciales reales, sin intermediarios.</span></div>
+          <div className="perk">{Icon.check}<span><b>Pagos QR</b> usando tus credenciales reales, sin intermediarios.</span></div>
           <div className="perk">{Icon.check}<span><b>Webhooks automáticos</b> — los pagos aprobados se acreditan al instante.</span></div>
           <div className="perk">{Icon.check}<span><b>Locales y POS</b> se importan solos. Solo elegís qué máquina vincular a qué.</span></div>
           <div className="perk">{Icon.check}<span><b>Revocable en un click</b> desde tu cuenta de Mercado Pago.</span></div>
@@ -45,7 +61,7 @@ function EmptyState({ onConnect, connecting }) {
         </button>
         <div className="mp-secure">
           {Icon.shield}
-          Conexión OAuth · OAuth 2.0 · solo lectura de cuenta + creación de pagos
+          Conexión OAuth 2.0 · solo lectura de cuenta + creación de pagos
         </div>
       </div>
 
@@ -82,7 +98,7 @@ function EmptyState({ onConnect, connecting }) {
           <div className="ico-box">{Icon.building}</div>
           <div>
             <div className="name">Tus locales</div>
-            <div className="sub">3 locales · 6 POS</div>
+            <div className="sub">se sincronizan solos</div>
           </div>
         </div>
       </div>
@@ -91,73 +107,46 @@ function EmptyState({ onConnect, connecting }) {
 }
 
 /* ============================================================
-   Redirect overlay — between click and connected state
+   Connected state — datos reales de MP + BD
    ============================================================ */
-function RedirectOverlay() {
-  return (
-    <div className="redirect-overlay">
-      <div className="redirect-card">
-        <div className="mp-mark">MP</div>
-        <h3>Redirigiendo a Mercado Pago</h3>
-        <p>Te estamos llevando a la pantalla de autorización oficial de MP. Volverás acá automáticamente.</p>
-        <span className="url">https://auth.mercadopago.com.ar/authorization?…</span>
-      </div>
-    </div>
-  );
-}
+function ConnectedState({ status, onDisconnect }) {
+  const [stores, setStores] = useState([]);
+  const [pos, setPos] = useState([]);
+  const [machines, setMachines] = useState([]);
+  const [lastWebhook, setLastWebhook] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [lastSync, setLastSync] = useState(null);
 
-/* ============================================================
-   Connected state — account + stores + devices
-   ============================================================ */
-const ACCOUNT = {
-  name: "Tecnovend SA",
-  email: "pagos@tecnovend.com.ar",
-  mp_user_id: "284910742",
-  connected_at: "22 mayo · 10:34",
-  expires: "21 may 2027",
-};
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [s, p, m, w] = await Promise.all([
+        apiFetch('/api/mp/stores').catch(() => []),
+        apiFetch('/api/mp/pos').catch(() => []),
+        apiFetch('/api/machines').catch(() => []),
+        apiFetch('/api/debug/webhook-logs?limit=1').catch(() => []),
+      ]);
+      setStores(Array.isArray(s) ? s : []);
+      setPos(Array.isArray(p) ? p : []);
+      setMachines(Array.isArray(m) ? m : []);
+      setLastWebhook(Array.isArray(w) && w.length ? w[0] : null);
+      setLastSync(new Date());
+    } finally {
+      setLoading(false);
+    }
+  };
 
-const STORES = [
-  {
-    id: "store_8821",
-    name: "Hospital Italiano — Lobby",
-    address: "Av. Pueyrredón 1640, CABA",
-    pos: 2, point: 1, machines: 2,
-  },
-  {
-    id: "store_5544",
-    name: "Universidad Austral — Campus Pilar",
-    address: "Av. Juan D. Perón 1500, Pilar",
-    pos: 1, point: 0, machines: 1,
-  },
-  {
-    id: "store_3309",
-    name: "Banco Galicia — HQ",
-    address: "Tte. Gral. Perón 430, CABA",
-    pos: 0, point: 2, machines: 2,
-  },
-  {
-    id: "store_7720",
-    name: "Telecom — Puerto Madero",
-    address: "Alicia M. de Justo 50, CABA",
-    pos: 1, point: 1, machines: 2,
-  },
-];
+  useEffect(() => { load(); }, []);
 
-const DEVICES = [
-  { type: "qr",    id: "pos_4421",   label: "Caja QR principal",  store: "Hospital Italiano",  machine: "machine_001" },
-  { type: "qr",    id: "pos_4422",   label: "Caja QR planta baja", store: "Hospital Italiano", machine: null },
-  { type: "point", id: "PAX-A920-8f3a92", label: "Point Pro · 8f3a92", store: "Hospital Italiano", machine: "machine_001" },
-  { type: "qr",    id: "pos_5501",   label: "Caja QR cafetería",  store: "Universidad Austral", machine: "machine_007" },
-  { type: "point", id: "PAX-A920-02214b", label: "Point Pro · 02214b", store: "Banco Galicia HQ", machine: "machine_012" },
-  { type: "point", id: "PAX-A920-31aa44", label: "Point Mini · 31aa44", store: "Banco Galicia HQ", machine: null },
-  { type: "qr",    id: "pos_1509",   label: "Caja QR oficinas",   store: "Telecom",            machine: "machine_015" },
-  { type: "point", id: "PAX-A920-01088c", label: "Point Pro · 01088c", store: "Telecom",       machine: "machine_018" },
-];
+  // Máquina vinculada a una caja: por mp_pos_id (id de MP) o pos_id (external_id)
+  const machineForPos = (p) =>
+    machines.find(m =>
+      (m.mp_pos_id && String(m.mp_pos_id) === String(p.id)) ||
+      (p.external_id && m.pos_id === p.external_id)
+    ) || null;
 
-function ConnectedState({ onDisconnect }) {
-  const totalPos = STORES.reduce((s, st) => s + st.pos, 0);
-  const totalPoint = STORES.reduce((s, st) => s + st.point, 0);
+  const posOfStore = (s) => pos.filter(p => String(p.store_id) === String(s.id));
+  const linkedCount = pos.filter(p => machineForPos(p)).length;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -166,22 +155,24 @@ function ConnectedState({ onDisconnect }) {
         <div className="badge">MP</div>
         <div className="info">
           <div className="name" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {ACCOUNT.name}
+            Cuenta Mercado Pago
             <span className="verified" title="Conexión verificada" style={{ display: "inline-flex", color: "var(--ok)" }}>{Icon.check}</span>
             <span className="spill ok" style={{ marginLeft: 6 }}>conectado</span>
           </div>
           <div className="meta">
-            <span>{ACCOUNT.email}</span>
+            <span className="mono">user_id: {status?.user_id ?? '—'}</span>
             <span className="sep">·</span>
-            <span className="mono">user_id: {ACCOUNT.mp_user_id}</span>
-            <span className="sep">·</span>
-            <span>conectada hoy {ACCOUNT.connected_at}</span>
-            <span className="sep">·</span>
-            <span>token vence {ACCOUNT.expires}</span>
+            <span>{status?.oauth ? 'vía OAuth' : 'vía access token (env)'}</span>
+            {lastSync && (
+              <>
+                <span className="sep">·</span>
+                <span>sincronizado {lastSync.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}</span>
+              </>
+            )}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn">{Icon.refresh} Sincronizar locales</button>
+          <button className="btn" onClick={load} disabled={loading}>{Icon.refresh} {loading ? 'Sincronizando…' : 'Sincronizar'}</button>
           <button className="danger" onClick={onDisconnect}>{Icon.unplug} Desconectar</button>
         </div>
       </div>
@@ -190,23 +181,27 @@ function ConnectedState({ onDisconnect }) {
       <div className="detail-strip">
         <div className="item">
           <span className="label">Locales</span>
-          <span className="value">{STORES.length}</span>
+          <span className="value">{loading ? '…' : stores.length}</span>
           <span style={{ fontSize: 11.5, color: "var(--ink-3)" }} className="mono">stores en tu cuenta MP</span>
         </div>
         <div className="item">
           <span className="label">Cajas QR · POS</span>
-          <span className="value">{totalPos}</span>
-          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }} className="mono">{DEVICES.filter(d => d.type === "qr" && d.machine).length} vinculadas a máquinas</span>
+          <span className="value">{loading ? '…' : pos.length}</span>
+          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }} className="mono">{linkedCount} vinculada{linkedCount !== 1 ? 's' : ''} a máquinas</span>
         </div>
         <div className="item">
-          <span className="label">Terminales Point</span>
-          <span className="value">{totalPoint}</span>
-          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }} className="mono">{DEVICES.filter(d => d.type === "point" && d.machine).length} vinculadas a máquinas</span>
+          <span className="label">Máquinas</span>
+          <span className="value">{loading ? '…' : machines.length}</span>
+          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }} className="mono">en la organización activa</span>
         </div>
         <div className="item">
-          <span className="label">Webhook IPN</span>
-          <span className="value" style={{ color: "var(--ok)" }}>200 OK</span>
-          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }} className="mono">avg 142 ms · últimas 24 h</span>
+          <span className="label">Último webhook</span>
+          <span className="value" style={{ color: lastWebhook ? "var(--ok)" : "var(--ink-3)" }}>
+            {loading ? '…' : lastWebhook ? timeAgo(lastWebhook.received_at) : '—'}
+          </span>
+          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }} className="mono">
+            {lastWebhook?.result ? lastWebhook.result.slice(0, 38) : 'sin notificaciones aún'}
+          </span>
         </div>
       </div>
 
@@ -215,39 +210,50 @@ function ConnectedState({ onDisconnect }) {
         <div className="card-head">
           <div>
             <div className="card-title">Locales</div>
-            <div className="card-sub">Sucursales registradas en tu cuenta de Mercado Pago · sincronizadas hace 4 s</div>
-          </div>
-          <div className="card-actions">
-            <button className="link-btn">{Icon.refresh} Sincronizar</button>
-            <button className="link-btn">Ver en MP{Icon.ext}</button>
+            <div className="card-sub">Sucursales registradas en tu cuenta de Mercado Pago</div>
           </div>
         </div>
         <div className="locale-list">
-          <div className="locale head">
-            <span></span>
-            <span>Local</span>
-            <span>Cajas QR</span>
-            <span>Point</span>
-            <span>Máquinas vinculadas</span>
-            <span></span>
-          </div>
-          {STORES.map(s => (
-            <div className="locale" key={s.id}>
-              <div className="locale-ico">{Icon.building}</div>
-              <div className="locale-name">
-                <span className="n">{s.name}</span>
-                <span className="addr" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{Icon.pin} {s.address}</span>
-              </div>
-              <div className="locale-stat">{Icon.qr}<span className="v">{s.pos}</span></div>
-              <div className="locale-stat">{Icon.card}<span className="v">{s.point}</span></div>
-              <div className="locale-stat" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                {Icon.machine}
-                <span className="v">{s.machines}</span>
-                <span style={{ fontSize: 11.5, color: "var(--ink-3)", marginLeft: 4 }} className="mono">de {s.pos + s.point} posibles</span>
-              </div>
-              <button className="actions-menu">{Icon.more}</button>
+          {loading ? (
+            <div style={{ padding: '24px 18px', color: 'var(--ink-3)', fontSize: 13 }}>Cargando locales…</div>
+          ) : stores.length === 0 ? (
+            <div style={{ padding: '24px 18px', textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
+              Sin locales en esta cuenta MP. Se crean automáticamente al tagear una máquina.
             </div>
-          ))}
+          ) : (
+            <>
+              <div className="locale head">
+                <span></span>
+                <span>Local</span>
+                <span>Cajas QR</span>
+                <span>Point</span>
+                <span>Máquinas vinculadas</span>
+                <span></span>
+              </div>
+              {stores.map(s => {
+                const sp = posOfStore(s);
+                const linked = sp.filter(p => machineForPos(p)).length;
+                return (
+                  <div className="locale" key={s.id}>
+                    <div className="locale-ico">{Icon.building}</div>
+                    <div className="locale-name">
+                      <span className="n">{s.name}</span>
+                      <span className="addr" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{Icon.pin} {storeAddress(s)}</span>
+                    </div>
+                    <div className="locale-stat">{Icon.qr}<span className="v">{sp.length}</span></div>
+                    {/* Point oculto hasta tener los posnet (Fase 2) */}
+                    <div className="locale-stat" style={{ color: 'var(--ink-4)' }}>{Icon.card}<span className="v">—</span></div>
+                    <div className="locale-stat" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      {Icon.machine}
+                      <span className="v">{linked}</span>
+                      <span style={{ fontSize: 11.5, color: "var(--ink-3)", marginLeft: 4 }} className="mono">de {sp.length} posibles</span>
+                    </div>
+                    <span></span>
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
       </div>
 
@@ -255,48 +261,62 @@ function ConnectedState({ onDisconnect }) {
       <div className="card">
         <div className="card-head">
           <div>
-            <div className="card-title">POS · QR & Terminales Point</div>
-            <div className="card-sub">Vinculá cada dispositivo a una máquina para activar los pagos</div>
+            <div className="card-title">POS · Cajas QR</div>
+            <div className="card-sub">Cada caja se vincula a una máquina desde su pantalla (card "Tageo MP")</div>
           </div>
           <div className="card-actions">
-            <span className="pill">{DEVICES.length} dispositivos</span>
-            <button className="link-btn">{Icon.plus} Crear caja QR</button>
+            <span className="pill">{pos.length} dispositivo{pos.length !== 1 ? 's' : ''}</span>
           </div>
         </div>
         <div className="dev-list">
-          <div className="dev-row head">
-            <span></span>
-            <span>Dispositivo</span>
-            <span>Local</span>
-            <span>Vinculado a</span>
-            <span>Estado</span>
-            <span></span>
-          </div>
-          {DEVICES.map(d => (
-            <div className="dev-row" key={d.id}>
-              <div className={"ico " + d.type}>{d.type === "qr" ? Icon.qr : Icon.card}</div>
-              <div className="name-cell">
-                <span className="n">{d.label}</span>
-                <span className="mono">{d.id}</span>
-              </div>
-              <div style={{ color: "var(--ink-2)" }}>{d.store}</div>
-              <div>
-                {d.machine ? (
-                  <span className="machine-tag">{Icon.machine}{d.machine}</span>
-                ) : (
-                  <span className="machine-tag empty">{Icon.plus} sin vincular</span>
-                )}
-              </div>
-              <div>
-                {d.machine ? (
-                  <span className="spill ok">{Icon.check} activo</span>
-                ) : (
-                  <span className="spill warn">pendiente</span>
-                )}
-              </div>
-              <button className="actions-menu">{Icon.more}</button>
+          {loading ? (
+            <div style={{ padding: '24px 18px', color: 'var(--ink-3)', fontSize: 13 }}>Cargando cajas…</div>
+          ) : pos.length === 0 ? (
+            <div style={{ padding: '24px 18px', textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
+              Sin cajas QR todavía. Se crean al tagear una máquina desde su pantalla.
             </div>
-          ))}
+          ) : (
+            <>
+              <div className="dev-row head">
+                <span></span>
+                <span>Dispositivo</span>
+                <span>Local</span>
+                <span>Vinculado a</span>
+                <span>Estado</span>
+                <span></span>
+              </div>
+              {/* Vinculadas a máquinas (activas) primero */}
+              {[...pos].sort((a, b) => (machineForPos(b) ? 1 : 0) - (machineForPos(a) ? 1 : 0)).map(p => {
+                const m = machineForPos(p);
+                const store = stores.find(s => String(s.id) === String(p.store_id));
+                return (
+                  <div className="dev-row" key={p.id}>
+                    <div className="ico qr">{Icon.qr}</div>
+                    <div className="name-cell">
+                      <span className="n">{p.name || 'Caja QR'}</span>
+                      <span className="mono">{p.external_id || p.id}</span>
+                    </div>
+                    <div style={{ color: "var(--ink-2)" }}>{store?.name || (p.store_id ? `Local ${p.store_id}` : '—')}</div>
+                    <div>
+                      {m ? (
+                        <span className="machine-tag">{Icon.machine}{m.id}</span>
+                      ) : (
+                        <span className="machine-tag empty">sin vincular</span>
+                      )}
+                    </div>
+                    <div>
+                      {m ? (
+                        <span className="spill ok">{Icon.check} activo</span>
+                      ) : (
+                        <span className="spill warn">pendiente</span>
+                      )}
+                    </div>
+                    <span></span>
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -307,29 +327,37 @@ function ConnectedState({ onDisconnect }) {
    App entry
    ============================================================ */
 export default function Pagos() {
-  const [envProd, setEnvProd] = useState(false);
-  const [state, setState] = useState(() => {
-    return localStorage.getItem("tecnovend_mp_connected") === "true" ? "connected" : "empty";
-  });
-  const [showRedirect, setShowRedirect] = useState(false);
+  const { orgId } = useAuth();
+  const [envProd, setEnvProd] = useState(true);
+  const [status, setStatus] = useState(null); // null = cargando
+  const [connecting, setConnecting] = useState(false);
 
-  const connect = () => {
-    setState("connecting");
-    setShowRedirect(true);
-    // Simulate MP OAuth round-trip
-    setTimeout(() => {
-      setShowRedirect(false);
-      setState("connected");
-      localStorage.setItem("tecnovend_mp_connected", "true");
-    }, 2200);
+  const checkStatus = async () => {
+    try { setStatus(await apiFetch('/api/mp/status')); }
+    catch { setStatus({ connected: false }); }
   };
 
-  const disconnect = () => {
-    if (confirm("¿Desconectar la cuenta de Mercado Pago? Vas a tener que reautorizar para volver a cobrar.")) {
-      setState("empty");
-      localStorage.removeItem("tecnovend_mp_connected");
+  useEffect(() => { checkStatus(); }, []);
+
+  // OAuth real: redirige al flujo de autorización de MP del cliente activo
+  // (vuelve por el callback). El local y las cajas viven en su cuenta.
+  const connect = () => {
+    if (!orgId) { alert('Seleccioná un cliente antes de conectar Mercado Pago.'); return; }
+    setConnecting(true);
+    window.location.href = `${API_BASE}/api/mp/auth?org=${encodeURIComponent(orgId)}`;
+  };
+
+  const disconnect = async () => {
+    if (!confirm("¿Desconectar la cuenta de Mercado Pago? Vas a tener que reautorizar para volver a cobrar.")) return;
+    try {
+      await apiFetch('/api/mp/auth/disconnect', { method: 'POST' });
+      await checkStatus();
+    } catch (e) {
+      alert('No se pudo desconectar: ' + e.message);
     }
   };
+
+  const connected = status?.connected === true;
 
   return (
     <div className="app">
@@ -340,28 +368,30 @@ export default function Pagos() {
           onEnvToggle={() => setEnvProd(p => !p)}
           crumbs={["Operación", "Pagos · Mercado Pago"]}
         />
-        <div className="page" data-screen-label={state === "connected" ? "02 Pagos · MP conectado" : "01 Pagos · MP conectar"}>
+        <div className="page" data-screen-label={connected ? "02 Pagos · MP conectado" : "01 Pagos · MP conectar"}>
           <div className="page-head">
             <div>
               <h1 className="page-title">
                 Pagos · Mercado Pago
-                {state === "connected" && <span className="accent"> — cuenta vinculada</span>}
-                {state !== "connected" && <span className="accent"> — autorizá tu cuenta</span>}
+                {connected && <span className="accent"> — cuenta vinculada</span>}
+                {!connected && status !== null && <span className="accent"> — autorizá tu cuenta</span>}
               </h1>
               <div className="page-subtitle">
-                {state === "connected"
-                  ? "Tus locales, cajas QR y terminales Point sincronizan automáticamente."
+                {connected
+                  ? "Tus locales y cajas QR sincronizan automáticamente."
                   : "Una sola autorización OAuth conecta toda tu operación."}
               </div>
             </div>
           </div>
 
-          {state === "connected"
-            ? <ConnectedState onDisconnect={disconnect} />
-            : <EmptyState onConnect={connect} connecting={state === "connecting"} />
-          }
+          {status === null ? (
+            <div style={{ padding: 40, color: 'var(--ink-3)' }}>Verificando conexión con Mercado Pago…</div>
+          ) : connected ? (
+            <ConnectedState status={status} onDisconnect={disconnect} />
+          ) : (
+            <EmptyState onConnect={connect} connecting={connecting} />
+          )}
         </div>
-        {showRedirect && <RedirectOverlay />}
       </div>
     </div>
   );

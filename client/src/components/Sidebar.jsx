@@ -5,8 +5,8 @@ import { Icon } from './Icons.jsx';
 export default function Sidebar() {
   const location = useLocation();
   const navOps = [
-    { id: "dashboard", ico: Icon.home,    label: "Dashboard",       href: "/" },
-    { id: "clientes",  ico: Icon.building, label: "Clientes",       href: "/clientes" },
+    // Dashboard y Clientes ocultos por ahora (las páginas siguen en el código,
+    // se reactivan agregándolos acá y restaurando sus rutas en App.jsx).
     { id: "maquinas",  ico: Icon.machine, label: "Máquinas",        href: "/maquinas", count: 47 },
     { id: "pagos",     ico: Icon.card,    label: "Pagos · MP",      href: "/pagos", dot: true },
     { id: "reportes",  ico: Icon.chart,   label: "Reportes",        href: "#" },

@@ -3,25 +3,35 @@ import crypto from 'crypto';
 import db from '../db/schema.js';
 import * as mp from '../services/mp.js';
 import { refundPaymentById } from '../services/refunds.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
 // ─── OAuth ───────────────────────────────────────────────────────────────────
 
-// GET /api/mp/auth — inicia el flujo OAuth, redirige al portal de MP
+// El cliente/organización dueño de la conexión MP: lo manda el front en x-org-id
+// (o ?org= en el arranque del OAuth, que es una navegación de página completa).
+const orgOf = (req) => req.query.org || req.headers['x-org-id'] || null;
+
+// GET /api/mp/auth?org=<clientId> — inicia el OAuth para conectar la cuenta MP
+// de ESE cliente. El local y las cajas van a vivir en su cuenta.
 router.get('/auth', (req, res) => {
-  const clientId = process.env.MP_CLIENT_ID;
-  if (!clientId) return res.status(500).json({ error: 'MP_CLIENT_ID no configurado' });
+  const mpAppClientId = process.env.MP_CLIENT_ID;
+  if (!mpAppClientId) return res.status(500).json({ error: 'MP_CLIENT_ID no configurado' });
+
+  const org = orgOf(req);
+  if (!org) return res.status(400).send('Faltó el cliente (org) que conecta Mercado Pago.');
 
   const redirectUri = `${req.protocol}://${req.get('host')}/api/mp/auth/callback`;
   const state = crypto.randomBytes(16).toString('hex');
-  // Guardar state para verificar en el callback
-  db.prepare(`INSERT INTO config (key, value) VALUES ('oauth_state', ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`)
-    .run(state);
+  // Guardar state + el cliente que conecta, para recuperarlos en el callback.
+  const upsert = db.prepare(`INSERT INTO config (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`);
+  upsert.run('oauth_state', state);
+  upsert.run('oauth_state_org', org);
 
   const url = new URL('https://auth.mercadopago.com/authorization');
-  url.searchParams.set('client_id', clientId);
+  url.searchParams.set('client_id', mpAppClientId);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('platform_id', 'mp');
   url.searchParams.set('state', state);
@@ -35,13 +45,15 @@ router.get('/auth/callback', async (req, res) => {
   const { code, state } = req.query;
   if (!code) return res.status(400).send('Faltó el código de autorización de MP.');
 
-  // Verificar state
+  // Verificar state y recuperar el cliente que inició la conexión.
   const savedState = db.prepare('SELECT value FROM config WHERE key = ?').get('oauth_state');
   if (!savedState || savedState.value !== state) {
     return res.status(400).send('State inválido — posible ataque CSRF.');
   }
+  const org = db.prepare('SELECT value FROM config WHERE key = ?').get('oauth_state_org')?.value || null;
+  if (!org) return res.status(400).send('No se pudo determinar el cliente de la conexión.');
 
-  const clientId = process.env.MP_CLIENT_ID;
+  const mpAppClientId = process.env.MP_CLIENT_ID;
   const clientSecret = process.env.MP_CLIENT_SECRET;
   const redirectUri = `${req.protocol}://${req.get('host')}/api/mp/auth/callback`;
 
@@ -50,7 +62,7 @@ router.get('/auth/callback', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        client_id: clientId,
+        client_id: mpAppClientId,
         client_secret: clientSecret,
         code,
         redirect_uri: redirectUri,
@@ -60,10 +72,19 @@ router.get('/auth/callback', async (req, res) => {
     const data = await tokenRes.json();
     if (!tokenRes.ok) throw new Error(data.message || JSON.stringify(data));
 
-    mp.setStoredToken(data.access_token, data.refresh_token, data.expires_in);
-    console.log(`[oauth] ✓ token guardado para user_id ${data.user_id}`);
+    mp.setStoredToken(org, {
+      token: data.access_token,
+      refreshToken: data.refresh_token,
+      expiresIn: data.expires_in,
+      mpUserId: data.user_id,
+    });
+    console.log(`[oauth] ✓ cuenta MP user_id ${data.user_id} conectada al cliente ${org}`);
 
-    // Redirigir a la web con éxito
+    // Limpiar el state de un solo uso + el token global legacy: ya no hay
+    // fallback, cada cliente usa exclusivamente su propia cuenta conectada.
+    db.prepare(`DELETE FROM config WHERE key IN
+      ('oauth_state', 'oauth_state_org', 'mp_access_token', 'mp_refresh_token', 'mp_token_expires_at')`).run();
+
     res.redirect('/?mp_connected=1');
   } catch (e) {
     console.error('[oauth]', e.message);
@@ -71,31 +92,33 @@ router.get('/auth/callback', async (req, res) => {
   }
 });
 
-// GET /api/mp/auth/disconnect — desvincula la cuenta MP
+// POST /api/mp/auth/disconnect — desvincula la cuenta MP del cliente activo
 router.post('/auth/disconnect', (req, res) => {
-  for (const key of ['mp_access_token', 'mp_refresh_token', 'mp_token_expires_at']) {
-    db.prepare('DELETE FROM config WHERE key = ?').run(key);
-  }
+  const org = orgOf(req);
+  if (!org) return res.status(400).json({ error: 'Faltó el cliente (org)' });
+  db.prepare('DELETE FROM mp_connections WHERE client_id = ?').run(org);
   res.json({ ok: true });
 });
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 
-// GET /api/mp/status — verificar conexión con MP
+// GET /api/mp/status — conexión MP del cliente activo (x-org-id). `connected`
+// refleja si ESE cliente tiene su propia cuenta conectada (no el token global).
 router.get('/status', async (req, res) => {
+  const org = orgOf(req);
+  if (!org || !mp.hasConnection(org)) return res.json({ connected: false });
   try {
-    const userId = await mp.getUserId();
-    const isOAuth = !!db.prepare('SELECT value FROM config WHERE key = ?').get('mp_access_token');
-    res.json({ connected: true, user_id: userId, oauth: isOAuth });
+    const userId = await mp.getUserId(org);
+    res.json({ connected: true, user_id: userId, oauth: true });
   } catch (e) {
     res.json({ connected: false, error: e.message });
   }
 });
 
-// GET /api/mp/stores — locales de MP
+// GET /api/mp/stores — locales de la cuenta MP del cliente activo
 router.get('/stores', async (req, res) => {
   try {
-    const stores = await mp.getStores();
+    const stores = await mp.getStores(orgOf(req));
     res.json(stores);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -105,7 +128,7 @@ router.get('/stores', async (req, res) => {
 // GET /api/mp/stores/:id — detalle de un local por ID
 router.get('/stores/:id', async (req, res) => {
   try {
-    const store = await mp.getStore(req.params.id);
+    const store = await mp.getStore(req.params.id, orgOf(req));
     res.json(store);
   } catch (e) {
     res.status(404).json({ error: e.message });
@@ -116,43 +139,22 @@ router.get('/stores/:id', async (req, res) => {
 router.get('/pos', async (req, res) => {
   const { storeId } = req.query;
   try {
-    const pos = await mp.listPOS(storeId);
+    const pos = await mp.listPOS(storeId, orgOf(req));
     res.json(pos);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// POST /api/mp/pos/:machineId — crear store + POS en MP para una máquina
+// POST /api/mp/pos/:machineId — crear (o reutilizar) la caja de la máquina en el
+// local default y asociarla. Misma lógica que usa el alta de máquina.
 router.post('/pos/:machineId', async (req, res) => {
   const machine = db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
 
   try {
-    const storeExtId = `tv_${machine.id}`;
-
-    const storeData = await mp.createStore({
-      externalId: storeExtId,
-      name: machine.name,
-      address: machine.location || '',
-    });
-
-    const posData = await mp.createPOS({
-      externalId: machine.id,
-      name: machine.name,
-      externalStoreId: storeExtId,
-    });
-
-    db.prepare('UPDATE machines SET pos_id = ?, mp_pos_id = ?, mp_store_id = ? WHERE id = ?')
-      .run(machine.id, String(posData.id), String(storeData.id), machine.id);
-
-    res.json({
-      ok: true,
-      pos_id: posData.id,
-      store_id: storeData.id,
-      qr_code: posData.qr_code,
-      qr_code_base64: posData.qr_code_base64,
-    });
+    const r = await mp.provisionMachinePos(machine);
+    res.json({ ok: true, ...r });
   } catch (e) {
     console.error('[mp/setup]', e.message);
     res.status(500).json({ error: e.message });
@@ -166,7 +168,7 @@ router.get('/pos/:machineId', async (req, res) => {
   if (!machine.mp_pos_id) return res.status(404).json({ error: 'Sin POS configurado', code: 'no_pos' });
 
   try {
-    const pos = await mp.getPOS(machine.mp_pos_id);
+    const pos = await mp.getPOS(machine.mp_pos_id, machine.client_id);
     res.json(pos);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -189,7 +191,7 @@ router.put('/pos/:machineId/order', async (req, res) => {
       amount,
       description: description || machine.name,
       externalReference: externalRef,
-    });
+    }, machine.client_id);
     res.json({ ok: true, external_reference: externalRef, order_id: order?.id || null });
   } catch (e) {
     console.error('[mp/order]', e.message);
@@ -200,7 +202,7 @@ router.put('/pos/:machineId/order', async (req, res) => {
 // GET /api/mp/orders/:orderId — estado de una orden en MP
 router.get('/orders/:orderId', async (req, res) => {
   try {
-    const order = await mp.getOrder(req.params.orderId);
+    const order = await mp.getOrder(req.params.orderId, orgOf(req));
     res.json({ id: order.id, status: order.status, total_amount: order.total_amount });
   } catch (e) {
     res.status(500).json({ error: e.message });

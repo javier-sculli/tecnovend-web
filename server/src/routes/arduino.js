@@ -2,6 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import db from '../db/schema.js';
 import { refundPaymentById } from '../services/refunds.js';
+import { reconcileMachineSoon } from '../services/reconcile.js';
 
 const router = Router();
 
@@ -36,8 +37,10 @@ router.get('/poll/:arduinoId', (req, res) => {
 
   const machineId = machine.id;
 
-  // Cualquier contacto del Arduino cuenta como señal de vida
-  db.prepare(`UPDATE machines SET last_seen_at = datetime('now') WHERE id = ?`).run(machineId);
+  // El `/poll` NO toca `last_seen_at`: el estado de la máquina depende solo del
+  // heartbeat (ver POST /heartbeat). Si el poll también marcara vida, una
+  // máquina que pollea pero dejó de latir se vería online sin reflejarse en el
+  // timeline, que solo registra heartbeats. Heartbeat = única señal de vida.
 
   // La expiración de pulsos vive en un solo lugar: el barrido periódico de
   // index.js. Acá no se toca, para no mezclar lógica.
@@ -48,6 +51,11 @@ router.get('/poll/:arduinoId', (req, res) => {
   if (machine.status !== 'active') {
     return res.json({ machine_id: machineId, pending_pulses: [] });
   }
+
+  // Fuerza un refresco de los pagos de la cuenta de esta máquina (rescata pagos
+  // tipeados que no webhookean). Fire-and-forget + throttle por cliente: no
+  // bloquea esta respuesta; el pago recién entrado aparece en el poll siguiente.
+  reconcileMachineSoon(machine);
 
   // Marcar como entregados
   const pending = db.prepare(`

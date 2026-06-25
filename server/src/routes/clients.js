@@ -8,13 +8,24 @@ function genClientId() {
   return 'cli_' + crypto.randomBytes(3).toString('hex');
 }
 
-// Listado de clientes + cantidad de máquinas vinculadas
+// Listado de organizaciones. Si hay sesión, solo las del usuario (con su rol);
+// sin sesión (auth desactivada por ahora), todas.
 router.get('/', (req, res) => {
-  const clients = db.prepare(`
-    SELECT c.*, (SELECT COUNT(*) FROM machines m WHERE m.client_id = c.id) AS machine_count
-    FROM clients c
-    ORDER BY c.created_at DESC
-  `).all();
+  const clients = req.user
+    ? db.prepare(`
+        SELECT c.*, m.role AS my_role,
+          (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id) AS machine_count
+        FROM clients c
+        JOIN memberships m ON m.client_id = c.id
+        WHERE m.user_id = ?
+        ORDER BY c.created_at DESC
+      `).all(req.user.id)
+    : db.prepare(`
+        SELECT c.*,
+          (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id) AS machine_count
+        FROM clients c
+        ORDER BY c.created_at DESC
+      `).all();
   res.json(clients);
 });
 
@@ -33,6 +44,11 @@ router.post('/', (req, res) => {
   `).run(
     id, name, contact_name ?? null, contact_email ?? null, contact_phone ?? null, notes ?? null,
   );
+  // Si hay sesión, el creador queda como administrador de la nueva organización.
+  if (req.user) {
+    db.prepare('INSERT INTO memberships (id, user_id, client_id, role) VALUES (?,?,?,?)')
+      .run('mem_' + crypto.randomBytes(3).toString('hex'), req.user.id, id, 'administrador');
+  }
   res.status(201).json({ id });
 });
 

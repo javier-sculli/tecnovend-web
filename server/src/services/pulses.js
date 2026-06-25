@@ -6,6 +6,10 @@ import db from '../db/schema.js';
 // Devuelve las filas expiradas en esta pasada ({ id, payment_id }) — sirven
 // para disparar el reembolso del pago asociado.
 export function expireStalePulses() {
+  // expires_at se guarda en el formato de SQLite ('YYYY-MM-DD HH:MM:SS', vía
+  // datetime() al encolar) para que esta comparación de strings sea válida. NO
+  // guardar acá un ISO de JS ('...T...Z'): compara como string SIEMPRE mayor que
+  // datetime('now') y el pulso nunca expiraría.
   const stale = db.prepare(`
     SELECT id, payment_id FROM pulse_queue
     WHERE status IN ('pending', 'delivered') AND expires_at < datetime('now')

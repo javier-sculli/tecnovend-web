@@ -3,24 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
-
-/* ---------- API ---------- */
-const API_BASE = (() => {
-  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
-  if (typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname))
-    return window.location.origin.replace('tecnovend-web', 'tecnovend-api');
-  return '';
-})();
-
-async function apiFetch(path, opts = {}) {
-  const res = await fetch(API_BASE + path, {
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    ...opts,
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-  return json;
-}
+import { apiFetch } from '../api.js';
 
 /* ============================================================
    Listado de clientes

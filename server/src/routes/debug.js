@@ -2,8 +2,21 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import db from '../db/schema.js';
 import { getPayment, getOrder } from '../services/mp.js';
+import { reconcileAll } from '../services/reconcile.js';
 
 const router = Router();
+
+// POST /api/debug/reconcile — dispara la reconciliación a mano (sin esperar el
+// barrido de 2 min). Devuelve cuántos pagos nuevos se rescataron. Útil para
+// probar: pagás tipeando en el QR y llamás esto para verlo aparecer.
+router.post('/reconcile', async (_req, res) => {
+  try {
+    const nuevos = await reconcileAll();
+    res.json({ ok: true, nuevos });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 function genPulseId() { return 'p_' + crypto.randomBytes(2).toString('hex'); }
 
@@ -30,7 +43,6 @@ router.post('/simulate-payment', (req, res) => {
 
   const fakeMpId = `SIM-${Date.now()}`;
   const paymentId = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   const pulseId = genPulseId();
 
   db.prepare(`
@@ -38,10 +50,12 @@ router.post('/simulate-payment', (req, res) => {
     VALUES (?, ?, ?, ?, 'qr', 'approved', ?)
   `).run(paymentId, machine_id, fakeMpId, amt, pulses);
 
+  // expires_at en formato datetime() de SQLite (no ISO de JS) para que el barrido
+  // de expiración pueda compararlo contra datetime('now'). Ver nota en webhooks.js.
   db.prepare(`
     INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
-    VALUES (?, ?, ?, 1, ?, ?)
-  `).run(pulseId, machine_id, paymentId, pulses, expiresAt);
+    VALUES (?, ?, ?, 1, ?, datetime('now', '+10 minutes'))
+  `).run(pulseId, machine_id, paymentId, pulses);
 
   console.log(`[debug] ✓ pago simulado ${fakeMpId} → $${amt} → ${pulses} pulsos → ${machine_id}`);
 
@@ -67,7 +81,7 @@ router.get('/webhook-logs', (req, res) => {
 // GET /api/debug/inspect/order/:id — llama a MP y devuelve el objeto order completo
 router.get('/inspect/order/:id', async (req, res) => {
   try {
-    const order = await getOrder(req.params.id);
+    const order = await getOrder(req.params.id, req.headers['x-org-id'] || null);
     const posId = order.config?.qr?.external_pos_id || order.config?.point?.external_pos_id || '';
     const machine = db.prepare('SELECT id, name, pos_id, mp_pos_id FROM machines WHERE (pos_id = ? OR mp_pos_id = ?) AND status = ?')
       .get(posId, posId, 'active');
@@ -80,7 +94,7 @@ router.get('/inspect/order/:id', async (req, res) => {
 // GET /api/debug/inspect/payment/:id — llama a MP y devuelve el objeto payment completo
 router.get('/inspect/payment/:id', async (req, res) => {
   try {
-    const payment = await getPayment(req.params.id);
+    const payment = await getPayment(req.params.id, req.headers['x-org-id'] || null);
     const posIdRaw =
       payment.additional_info?.pos_id ||
       payment.point_of_interaction?.point_of_interaction_detail?.id ||

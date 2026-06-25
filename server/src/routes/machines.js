@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
+import { armFixedQR } from '../services/qr.js';
+import { refundPaymentById } from '../services/refunds.js';
+import { provisionMachinePos } from '../services/mp.js';
 
 const router = Router();
 
@@ -21,6 +24,9 @@ function machineState(machine) {
 }
 
 router.get('/', (req, res) => {
+  // Scoping opcional por organización (header x-org-id). La validación de
+  // membresía está desactivada por ahora junto con el requireAuth global.
+  const orgId = req.headers['x-org-id'] || null;
   const machines = db.prepare(`
     SELECT m.*,
       (SELECT COUNT(*) FROM payments p
@@ -30,8 +36,9 @@ router.get('/', (req, res) => {
         WHERE p.machine_id = m.id AND p.status = 'approved'
           AND p.created_at >= datetime('now', '-7 days')) AS revenue_week
     FROM machines m
+    ${orgId ? 'WHERE m.client_id = ?' : ''}
     ORDER BY m.created_at DESC
-  `).all();
+  `).all(...(orgId ? [orgId] : []));
   res.json(machines.map(m => ({
     ...m,
     channels_config: JSON.parse(m.channels_config),
@@ -39,32 +46,54 @@ router.get('/', (req, res) => {
   })));
 });
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const {
-    id, name, location, address, model, device_serial, api_key,
+    id, name, location, address, model, device_serial, arduino_id, api_key,
     pos_id, terminal_id, mp_pos_id, mp_store_id, mp_store_name, client_id,
     pulse_value = 200, min_payment = 200, channels_config = [],
     wifi_ssid, wifi_user, wifi_password,
+    qr_mode = 'dynamic', qr_fixed_amount,
   } = req.body;
   if (!id || !name) return res.status(400).json({ error: 'id y name son requeridos' });
+  if (!['dynamic', 'fixed'].includes(qr_mode)) return res.status(400).json({ error: "qr_mode debe ser 'dynamic' o 'fixed'" });
+
+  // El serial de la placa ES el identificador del Arduino: arduino_id y
+  // device_serial son lo mismo. Aceptamos cualquiera de los dos del front y
+  // guardamos el mismo valor en ambas columnas.
+  const serial = (arduino_id ?? device_serial)?.trim() || null;
 
   db.prepare(`
     INSERT INTO machines
-      (id, name, location, address, model, device_serial, api_key,
+      (id, name, location, address, model, device_serial, arduino_id, api_key,
        pos_id, terminal_id, mp_pos_id, mp_store_id, mp_store_name, client_id,
        pulse_value, min_payment, channels_config,
-       wifi_ssid, wifi_user, wifi_password)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       wifi_ssid, wifi_user, wifi_password,
+       qr_mode, qr_fixed_amount)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, name, location ?? null, address ?? null, model ?? null,
-    device_serial ?? null, api_key ?? null,
+    serial, serial, api_key ?? null,
     pos_id ?? null, terminal_id ?? null, mp_pos_id ?? null,
     mp_store_id ?? null, mp_store_name ?? null, client_id ?? null,
     pulse_value, min_payment, JSON.stringify(channels_config),
     wifi_ssid ?? null, wifi_user ?? null, wifi_password ?? null,
+    qr_mode, qr_fixed_amount ?? null,
   );
 
-  res.status(201).json({ id });
+  // Provisión automática en MP: local default compartido + caja propia de la
+  // máquina, asociada acá mismo. Best-effort: la máquina queda creada aunque MP
+  // falle (se puede reintentar desde el detalle → solapa Pagos).
+  let mp = null, mp_error = null;
+  try {
+    const created = db.prepare('SELECT * FROM machines WHERE id = ?').get(id);
+    mp = await provisionMachinePos(created);
+    console.log(`[machines] ✓ ${id} provisionada en MP → caja ${mp.mp_pos_id} (local ${mp.store_id})`);
+  } catch (e) {
+    mp_error = e.message;
+    console.error(`[machines] ✗ provisión MP de ${id} falló: ${e.message}`);
+  }
+
+  res.status(201).json({ id, mp, mp_error });
 });
 
 router.get('/:id', (req, res) => {
@@ -80,16 +109,27 @@ router.get('/:id', (req, res) => {
   });
 });
 
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const {
     name, location, address, model, device_serial, api_key,
     pos_id, terminal_id, mp_pos_id, mp_store_id, mp_store_name, client_id,
     pulse_value, min_payment, channels_config, status,
     pulse_duration_ms, pulse_gap_ms,
     wifi_ssid, wifi_user, wifi_password,
+    qr_mode, qr_fixed_amount,
   } = req.body;
   const machine = db.prepare('SELECT id FROM machines WHERE id = ?').get(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
+
+  if (qr_mode !== undefined && !['dynamic', 'fixed'].includes(qr_mode)) {
+    return res.status(400).json({ error: "qr_mode debe ser 'dynamic' o 'fixed'" });
+  }
+  if (qr_mode === 'fixed') {
+    const amt = Number(qr_fixed_amount);
+    if (!Number.isInteger(amt) || amt < 15) {
+      return res.status(400).json({ error: 'qr_fixed_amount requerido y debe ser >= $15 (mínimo de Mercado Pago)' });
+    }
+  }
 
   db.prepare(`
     UPDATE machines SET
@@ -113,7 +153,9 @@ router.put('/:id', (req, res) => {
       pulse_gap_ms      = COALESCE(?, pulse_gap_ms),
       wifi_ssid         = COALESCE(?, wifi_ssid),
       wifi_user         = COALESCE(?, wifi_user),
-      wifi_password     = COALESCE(?, wifi_password)
+      wifi_password     = COALESCE(?, wifi_password),
+      qr_mode           = COALESCE(?, qr_mode),
+      qr_fixed_amount   = COALESCE(?, qr_fixed_amount)
     WHERE id = ?
   `).run(
     name ?? null, location ?? null, address ?? null, model ?? null,
@@ -125,14 +167,16 @@ router.put('/:id', (req, res) => {
     status ?? null,
     pulse_duration_ms ?? null, pulse_gap_ms ?? null,
     wifi_ssid ?? null, wifi_user ?? null, wifi_password ?? null,
+    qr_mode ?? null, qr_fixed_amount != null ? Number(qr_fixed_amount) : null,
     req.params.id,
   );
 
-  // arduino_id necesita manejo explícito: COALESCE no permite desvincular (null)
-  // ni dejarlo vacío. Si el body incluye la clave, la aplicamos tal cual.
+  // arduino_id (= serial de placa) necesita manejo explícito: COALESCE no permite
+  // desvincular (null) ni dejarlo vacío. Si el body incluye la clave, la aplicamos
+  // tal cual a ambas columnas (arduino_id y device_serial son lo mismo).
   if (Object.prototype.hasOwnProperty.call(req.body, 'arduino_id')) {
     const aid = req.body.arduino_id?.trim() || null;
-    db.prepare('UPDATE machines SET arduino_id = ? WHERE id = ?').run(aid, req.params.id);
+    db.prepare('UPDATE machines SET arduino_id = ?, device_serial = ? WHERE id = ?').run(aid, aid, req.params.id);
   }
 
   // client_id necesita manejo explícito: COALESCE no permite desvincular (null).
@@ -142,6 +186,37 @@ router.put('/:id', (req, res) => {
       .run(client_id ?? null, req.params.id);
   }
 
+  // Si la config de QR quedó en precio fijo, cargamos la orden en el QR ahora.
+  // Best-effort: el guardado no falla si MP no responde (queda qr_armed: false).
+  let qr_armed;
+  if (qr_mode !== undefined || qr_fixed_amount !== undefined) {
+    const updated = db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.id);
+    qr_armed = updated.qr_mode === 'fixed' ? await armFixedQR(updated) : undefined;
+  }
+
+  res.json({ ok: true, ...(qr_armed !== undefined ? { qr_armed } : {}) });
+});
+
+// Elimina la máquina y todo lo que cuelga de ella (FK: hay que borrar hijos
+// primero). No toca la caja en MP — el local/caja del cliente quedan en su cuenta.
+router.delete('/:id', (req, res) => {
+  const machine = db.prepare('SELECT id FROM machines WHERE id = ?').get(req.params.id);
+  if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
+
+  try {
+    db.exec('BEGIN');
+    db.prepare('DELETE FROM pulse_queue WHERE machine_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM payments WHERE machine_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM machine_events WHERE machine_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM machines WHERE id = ?').run(req.params.id);
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch {}
+    console.error('[machines/delete]', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+
+  console.log(`[machines] ✗ ${req.params.id} eliminada`);
   res.json({ ok: true });
 });
 
@@ -153,7 +228,7 @@ router.get('/:id/payments', (req, res) => {
 // Cola de pulsos de la máquina: pendientes y entregados arriba (en vuelo),
 // luego el resto. La expiración la maneja el barrido periódico de index.js.
 router.get('/:id/pulses', (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
   const pulses = db.prepare(`
     SELECT id, machine_id, payment_id, channel, count, status, created_at, acked_at, expires_at
     FROM pulse_queue
@@ -167,11 +242,21 @@ router.get('/:id/pulses', (req, res) => {
 });
 
 // Eliminar un pulso de la cola (cancelación manual desde la web).
-router.delete('/:id/pulses/:pulseId', (req, res) => {
-  const r = db.prepare('DELETE FROM pulse_queue WHERE id = ? AND machine_id = ?')
-    .run(req.params.pulseId, req.params.id);
-  if (r.changes === 0) return res.status(404).json({ error: 'Pulso no encontrado' });
-  res.json({ ok: true });
+// Con ?refund=1 además devuelve el pago asociado en MP (idempotente; si MP
+// falla queda 'failed' y el barrido lo reintenta solo).
+router.delete('/:id/pulses/:pulseId', async (req, res) => {
+  const pulse = db.prepare('SELECT id, payment_id, status FROM pulse_queue WHERE id = ? AND machine_id = ?')
+    .get(req.params.pulseId, req.params.id);
+  if (!pulse) return res.status(404).json({ error: 'Pulso no encontrado' });
+
+  db.prepare('DELETE FROM pulse_queue WHERE id = ?').run(pulse.id);
+
+  const wantRefund = req.query.refund === '1' || req.query.refund === 'true';
+  if (!wantRefund) return res.json({ ok: true, refunded: false });
+
+  if (!pulse.payment_id) return res.json({ ok: true, refunded: false, refund_error: 'pulso sin pago asociado' });
+  const r = await refundPaymentById(pulse.payment_id);
+  res.json({ ok: true, refunded: r.ok === true, refund_error: r.error || null });
 });
 
 // Feed de eventos unificado de la máquina. Junta tres fuentes:
@@ -181,7 +266,7 @@ router.delete('/:id/pulses/:pulseId', (req, res) => {
 // Devuelve una lista normalizada { type, kind, title, desc, at } ordenada por fecha.
 router.get('/:id/events', (req, res) => {
   const id = req.params.id;
-  const limit = Math.min(Number(req.query.limit) || 60, 200);
+  const limit = Math.min(Number(req.query.limit) || 60, 500);
 
   const out = [];
 

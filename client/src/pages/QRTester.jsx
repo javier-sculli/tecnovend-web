@@ -2,27 +2,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
+import { apiFetch } from '../api.js';
 
-const API = (() => {
-  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
-  if (typeof window !== 'undefined' && !['localhost','127.0.0.1'].includes(window.location.hostname))
-    return window.location.origin.replace('tecnovend-web', 'tecnovend-api');
-  return '';
-})();
 const ars = (n) => '$' + Number(n).toLocaleString('es-AR', { maximumFractionDigits: 0 });
-
-/* ──────────────────────────────────────────────────────────
-   Helpers
-────────────────────────────────────────────────────────── */
-async function apiFetch(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    ...opts,
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-  return json;
-}
 
 /* ──────────────────────────────────────────────────────────
    MP Status badge
@@ -94,65 +76,6 @@ function SetupGuide() {
 }
 
 /* ──────────────────────────────────────────────────────────
-   New machine quick-register form
-────────────────────────────────────────────────────────── */
-function NewMachineForm({ onCreated }) {
-  const [name, setName] = useState('');
-  const [location, setLocation] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-
-  const submit = async (e) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    setBusy(true);
-    setErr('');
-    try {
-      const n = String(Math.floor(Math.random() * 900) + 100);
-      const id = 'machine_' + n;
-      await apiFetch('/api/machines', {
-        method: 'POST',
-        body: JSON.stringify({ id, name: name.trim(), location: location.trim() }),
-      });
-      onCreated();
-      setName(''); setLocation('');
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '14px 16px', background: 'var(--bg)', borderTop: '1px solid var(--line-2)' }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-4)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 4 }}>
-        Registrar máquina de prueba
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8 }}>
-        <input
-          className="form-field input"
-          style={{ border: '1px solid var(--line)', borderRadius: 6, padding: '6px 10px', fontFamily: 'inherit', fontSize: 13, outline: 0 }}
-          placeholder="Nombre *"
-          value={name}
-          onChange={e => setName(e.target.value)}
-          required
-        />
-        <input
-          style={{ border: '1px solid var(--line)', borderRadius: 6, padding: '6px 10px', fontFamily: 'inherit', fontSize: 13, outline: 0 }}
-          placeholder="Sede (opcional)"
-          value={location}
-          onChange={e => setLocation(e.target.value)}
-        />
-        <button className="btn primary" type="submit" disabled={!name.trim() || busy}>
-          {busy ? '…' : Icon.plus}
-        </button>
-      </div>
-      {err && <div style={{ fontSize: 12, color: 'var(--bad)' }}>{err}</div>}
-    </form>
-  );
-}
-
-/* ──────────────────────────────────────────────────────────
    Machine selector (left panel)
 ────────────────────────────────────────────────────────── */
 function MachineList({ machines, selectedId, onSelect, onRefresh }) {
@@ -169,8 +92,7 @@ function MachineList({ machines, selectedId, onSelect, onRefresh }) {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {machines.length === 0 ? (
           <div style={{ padding: '28px 18px', textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
-            Sin máquinas registradas en el servidor.<br />
-            <span style={{ fontSize: 12 }}>Usá el formulario de abajo para crear una.</span>
+            Sin máquinas registradas para este cliente.
           </div>
         ) : machines.map(m => {
           const hasPOS = !!m.mp_pos_id;
@@ -199,8 +121,6 @@ function MachineList({ machines, selectedId, onSelect, onRefresh }) {
           );
         })}
       </div>
-
-      <NewMachineForm onCreated={onRefresh} />
     </div>
   );
 }

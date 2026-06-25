@@ -1,51 +1,11 @@
 import { Router } from 'express';
-import crypto from 'crypto';
 import db from '../db/schema.js';
-import { verifyWebhookSignature, getPayment, getOrder } from '../services/mp.js';
+import { verifyWebhookSignature, getPaymentAny, getOrderAny, clientByMpUser } from '../services/mp.js';
 import { processPendingRefunds } from '../services/refunds.js';
+import { armFixedQR } from '../services/qr.js';
+import { findMachine, enqueuePayment, isOurOrderRef } from '../services/payments.js';
 
 const router = Router();
-
-function genPulseId() { return 'p_' + crypto.randomBytes(2).toString('hex'); }
-function genPaymentId() { return crypto.randomUUID(); }
-
-// Resuelve la máquina por su pos_id, sin filtrar por status: el pago SIEMPRE se
-// registra (CLAUDE.md). El status define después si corresponden pulsos o no.
-function findMachine(posId) {
-  if (!posId) return null;
-  return db.prepare('SELECT * FROM machines WHERE pos_id = ? OR mp_pos_id = ?')
-    .get(posId, posId) || null;
-}
-
-// Registra el pago y, si corresponde, encola el pulso. `idKind` indica si `mpId`
-// es un id de 'order' o de 'payment' (define por qué endpoint se reembolsa).
-// `refundPending` marca el pago para reembolso (caso fuera de servicio).
-// Devuelve el paymentId creado, o null si era duplicado.
-function enqueuePayment(machineId, mpId, amount, pulses, { idKind, refundPending = false } = {}) {
-  const existing = db.prepare('SELECT id FROM payments WHERE mp_payment_id = ?').get(mpId);
-  if (existing) return null; // deduplicación
-
-  const paymentId = genPaymentId();
-
-  // Siempre registramos el pago en la BD (aunque pulses=0 por monto insuficiente)
-  const status = 'approved'; // MP aprobó el pago — independiente de pulsos
-  db.prepare(`
-    INSERT INTO payments (id, machine_id, mp_payment_id, amount, method, status, pulses_calculated, mp_id_kind, refund_status)
-    VALUES (?, ?, ?, ?, 'qr', ?, ?, ?, ?)
-  `).run(paymentId, machineId, mpId, amount, status, pulses, idKind ?? null, refundPending ? 'pending' : null);
-
-  if (pulses >= 1) {
-    // Ventana de ACK: 3 minutos. Si el Arduino no confirma en ese tiempo, el
-    // pulso se expira (se saca de la cola, no acreditó) y se reembolsa el pago.
-    const expiresAt = new Date(Date.now() + 3 * 60 * 1000).toISOString();
-    db.prepare(`
-      INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
-      VALUES (?, ?, ?, 1, ?, ?)
-    `).run(genPulseId(), machineId, paymentId, pulses, expiresAt);
-  }
-
-  return paymentId;
-}
 
 function logWebhook(fields) {
   try {
@@ -74,14 +34,21 @@ router.post('/mercadopago', async (req, res) => {
 
   const { type, action, data } = req.body || {};
   const dataId = data?.id ?? req.query?.['data.id'] ?? req.query?.id;
-  console.log(`[webhook-in] type=${type} action=${action} dataId=${dataId} query=${JSON.stringify(req.query)}`);
+  // MP manda un user_id en el aviso. Lo usamos para resolver el cliente dueño y
+  // consultar el pago con SU token. Si no matchea (a veces viene el user_id de la
+  // app, no el de la cuenta colectora), getPaymentAny/getOrderAny prueban con el
+  // resto de las cuentas conectadas. No hay token global.
+  const ownerClientId = clientByMpUser(req.body?.user_id);
+  console.log(`[webhook-in] type=${type} action=${action} dataId=${dataId} user_id=${req.body?.user_id} cliente=${ownerClientId ?? 'global'} query=${JSON.stringify(req.query)}`);
 
   try {
-    const isOrderWebhook = type === 'order';
-    if (!isOrderWebhook && !verifyWebhookSignature(req)) {
-      console.warn('[webhook] firma HMAC inválida — ignorando');
-      logWebhook({ type, action, dataId, rawBody: req.body, result: 'ERROR: firma HMAC inválida' });
-      return;
+    // La firma es un control adicional, pero NO descartamos por ella: igual
+    // re-consultamos el pago/orden a MP con nuestro token (fuente autoritativa),
+    // solo registramos si matchea una caja nuestra y está approved, y dedup por
+    // mp_payment_id. Además MP avisa que las notificaciones de QR no siempre se
+    // pueden validar con la secret. Así no perdemos un pago por un tema de firma.
+    if (!verifyWebhookSignature(req)) {
+      console.warn('[webhook] firma HMAC no validada — proceso igual (re-consulto a MP)');
     }
 
     if (!dataId) {
@@ -93,7 +60,7 @@ router.post('/mercadopago', async (req, res) => {
     if (type === 'order' && action === 'order.processed') {
       let order;
       try {
-        order = await getOrder(dataId);
+        ({ order } = await getOrderAny(dataId, ownerClientId));
       } catch (e) {
         console.error(`[webhook] getOrder(${dataId}) falló:`, e.message);
         logWebhook({ type, action, dataId, rawBody: req.body, result: `ERROR getOrder: ${e.message}` });
@@ -122,16 +89,22 @@ router.post('/mercadopago', async (req, res) => {
       // máquina definen los pulsos: fuera de servicio → 0 (no genera ACK).
       const outOfService = machine.status !== 'active';
       const pulses = outOfService ? 0 : Math.floor(amount / machine.pulse_value);
-      const queued = enqueuePayment(machine.id, String(dataId), amount, pulses, { idKind: 'order', refundPending: outOfService });
+      // Regla única: si no se dispensa ni un pulso (fuera de servicio o monto <
+      // pulse_value, ej. subpago en QR libre) el pago se reembolsa solo. Nunca
+      // queda plata cobrada sin producto.
+      const noDispensa = pulses < 1;
+      const queued = enqueuePayment(machine.id, String(dataId), amount, pulses, { idKind: 'order', refundPending: noDispensa });
       const result = !queued ? 'SKIP: pago duplicado'
         : outOfService ? `OK (fuera de servicio: ${machine.status}): $${amount} registrado sin pulsos · reembolsando`
         : pulses >= 1 ? `OK: ${pulses} pulsos → ${machine.id}`
-        : `OK (sin pulsos): $${amount} < pulse_value $${machine.pulse_value}`;
+        : `OK (sin pulsos): $${amount} < pulse_value $${machine.pulse_value} · reembolsando`;
       if (queued && pulses >= 1) console.log(`[webhook] ✓ order ${dataId} → $${amount} → ${pulses} pulsos → ${machine.id}`);
       else if (queued && outOfService) console.log(`[webhook] ⛔ order ${dataId} → $${amount}: ${machine.id} fuera de servicio (${machine.status}) → reembolso`);
-      else if (queued) console.log(`[webhook] ⚠ order ${dataId} → $${amount} registrado sin pulsos (< pulse_value $${machine.pulse_value})`);
+      else if (queued) console.log(`[webhook] ⚠ order ${dataId} → $${amount} sin pulsos (< pulse_value $${machine.pulse_value}) → reembolso`);
       logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, posIdFound: posId, machineFound: machine.id, result });
-      if (queued && outOfService) await processPendingRefunds();
+      if (queued && noDispensa) await processPendingRefunds();
+      // Precio fijo: la orden se consumió con este pago → re-armar el QR.
+      if (queued) await armFixedQR(machine);
       return;
     }
 
@@ -139,7 +112,7 @@ router.post('/mercadopago', async (req, res) => {
     if (type === 'payment' && dataId) {
       let payment;
       try {
-        payment = await getPayment(dataId);
+        ({ payment } = await getPaymentAny(dataId, ownerClientId));
       } catch (e) {
         console.error(`[webhook] getPayment(${dataId}) falló:`, e.message);
         logWebhook({ type, action, dataId, rawBody: req.body, result: `ERROR getPayment: ${e.message}` });
@@ -159,6 +132,13 @@ router.post('/mercadopago', async (req, res) => {
         return;
       }
 
+      // Orden NUESTRA (tv_): ya la maneja el webhook de `order` bajo el id de la
+      // orden. Por id de pago la duplicaría (ver isOurOrderRef). Solo libres acá.
+      if (isOurOrderRef(payment.external_reference)) {
+        logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { external_reference: payment.external_reference }, result: 'SKIP payment: orden propia (tv_) — la maneja el webhook order' });
+        return;
+      }
+
       const machine = findMachine(posId);
       console.log(`[webhook] payment posId="${posId}" machine=${machine?.id ?? 'null'}`);
 
@@ -173,16 +153,31 @@ router.post('/mercadopago', async (req, res) => {
       // máquina definen los pulsos: fuera de servicio → 0 (no genera ACK).
       const outOfService = machine.status !== 'active';
       const pulses = outOfService ? 0 : Math.floor(amount / machine.pulse_value);
-      const queued = enqueuePayment(machine.id, String(dataId), amount, pulses, { idKind: 'payment', refundPending: outOfService });
+      // Regla única: 0 pulsos (fuera de servicio o subpago) → reembolso automático.
+      const noDispensa = pulses < 1;
+      const queued = enqueuePayment(machine.id, String(dataId), amount, pulses, { idKind: 'payment', refundPending: noDispensa });
       const result = !queued ? 'SKIP: pago duplicado'
         : outOfService ? `OK (fuera de servicio: ${machine.status}): $${amount} registrado sin pulsos · reembolsando`
         : pulses >= 1 ? `OK: ${pulses} pulsos → ${machine.id}`
-        : `OK (sin pulsos): $${amount} < pulse_value $${machine.pulse_value}`;
+        : `OK (sin pulsos): $${amount} < pulse_value $${machine.pulse_value} · reembolsando`;
       if (queued && pulses >= 1) console.log(`[webhook] ✓ pago ${dataId} → $${amount} → ${pulses} pulsos → ${machine.id}`);
       else if (queued && outOfService) console.log(`[webhook] ⛔ pago ${dataId} → $${amount}: ${machine.id} fuera de servicio (${machine.status}) → reembolso`);
-      else if (queued) console.log(`[webhook] ⚠ pago ${dataId} → $${amount} registrado sin pulsos (< pulse_value $${machine.pulse_value})`);
+      else if (queued) console.log(`[webhook] ⚠ pago ${dataId} → $${amount} sin pulsos (< pulse_value $${machine.pulse_value}) → reembolso`);
       logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount }, posIdFound: posId, machineFound: machine.id, result });
-      if (queued && outOfService) await processPendingRefunds();
+      if (queued && noDispensa) await processPendingRefunds();
+      // Precio fijo: la orden se consumió con este pago → re-armar el QR.
+      if (queued) await armFixedQR(machine);
+      return;
+    }
+
+    // ── Notificación de merchant_order (legacy) ───────────────────────────────
+    // NO la procesamos a propósito. Un pago fijo (orden nuestra) ya lo registra el
+    // webhook de `order` (bajo el id de la orden); los pagos libres/tipeados los
+    // levanta la reconciliación (que ve todos los pagos de la cuenta). El
+    // merchant_order traía el MISMO pago con OTRO id (id de pago vs id de orden) y
+    // solo servía para duplicar (bug machine_894). La dejamos solo logueada.
+    if (type === 'merchant_order' || type === 'topic_merchant_order_wh') {
+      logWebhook({ type, action, dataId, rawBody: req.body, result: 'IGNORADO merchant_order (cubierto por webhook order + reconciliación)' });
       return;
     }
 

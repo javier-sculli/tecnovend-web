@@ -48,6 +48,7 @@ Sistema propio de pagos para máquinas expendedoras. Reemplaza 5 proveedores ext
 - **Todo pago aprobado por MP se registra en `payments`**, sin excepción. No importa si el monto alcanza para un pulso o no.
 - El estado del pago refleja lo que pasó en MP (`approved` = MP confirmó el cobro, `rejected` = monto insuficiente para pulsos).
 - La lógica de pulsos es independiente: calcula cuántos pulsos corresponden y los encola en `pulse_queue`. Si el monto es insuficiente, `pulses_calculated = 0` y no se encolan — pero el pago queda registrado igual.
+- **0 pulsos → reembolso automático.** Si un pago aprobado no genera ni un pulso (monto < `pulse_value`, ej. subpago en QR libre; o máquina fuera de servicio), el webhook lo marca `refund_status = 'pending'` y se devuelve solo. Regla única: si no se dispensa nada, no se retiene la plata. El registro del pago no cambia; solo se agrega el flag de reembolso.
 - **Nunca mezclar ambas lógicas.** Si hay que cambiar cómo se calculan pulsos, no tocar el registro del pago. Si hay que cambiar cómo se registran pagos, no tocar la lógica de pulsos.
 
 ## Sistema de Pulsos
@@ -70,8 +71,8 @@ pulsos = floor(monto_pagado / pulse_value)
 ## API del Servidor
 
 **URLs de producción (Railway):**
-- API: `https://tecnovend-api-production.up.railway.app/`
-- Web de gestión: `https://tecnovend-web-production.up.railway.app/`
+- API + Web de gestión (servicio unificado, un solo deploy): `https://tecnovend-api-production.up.railway.app/`
+- El Express de la API sirve también el build de React (`server/public`, generado con `npm run build:web`). El servicio `tecnovend-web` quedó obsoleto. Pendiente: custom domain.
 
 ### Webhooks
 ```
@@ -157,7 +158,18 @@ expires_at  TIMESTAMP             -- pulso fantasma prevention
 
 ## Integración Mercado Pago
 
-**Credenciales:** propias de Tecnovend (Access Token del portal de developers de MP).
+### Modelo multi-cuenta (una cuenta de MP por cliente)
+> **Principio fundamental:** cada cliente conecta **su propia** cuenta de Mercado Pago por OAuth. **Nunca se comparte una cuenta entre clientes y NO hay fallback a un token global.** Si un cliente no conectó su cuenta, no puede operar (las llamadas a MP fallan con error claro) ni dar de alta máquinas.
+
+- El token de MP vive **por cliente** en la tabla `mp_connections` (`client_id`, `access_token`, `refresh_token`, `expires_at`, `mp_user_id`). No existe más el token global en `config`.
+- **OAuth atado al cliente:** `GET /api/mp/auth?org=<clientId>` conecta la cuenta de ese cliente; el callback guarda la conexión (con su `mp_user_id`) y borra cualquier token global legacy.
+- **Provisión automática:** al crear una máquina, el servidor crea/reutiliza un local default `tv_default` ("Tecnovend") **dentro de la cuenta del cliente** (`machine.client_id`) y le crea una caja QR propia. El `external_id` de la caja debe ser **alfanumérico** (MP rechaza guiones bajos): `machine_230` → `machine230`, y ese valor se guarda en `pos_id` (es lo que MP reporta como `external_pos_id` en el webhook).
+- **Una caja por máquina, siempre.** Nunca compartir una caja entre máquinas (sino los pagos se acreditan a una sola).
+- **Ruteo del webhook:** el aviso de MP trae el `user_id` de la cuenta colectora → `clientByMpUser(user_id)` resuelve el cliente → se consulta el pago con **su** token. Sin match no hay fallback: el aviso se ignora con error logueado.
+- **Gate de alta (web):** "Nueva máquina" abre un pop-up para conectar MP si el cliente activo no tiene cuenta conectada.
+- **Cliente activo:** el front lo manda en el header `x-org-id`; el OAuth lo pasa como `?org=`.
+
+**Credenciales de la app de MP (no del vendedor):** `MP_CLIENT_ID` / `MP_CLIENT_SECRET` del portal de developers (para el OAuth). El access token de cada vendedor se obtiene por OAuth y se guarda en `mp_connections`.
 
 ### Endpoints de MP a usar
 ```
@@ -235,8 +247,11 @@ Proceso único por máquina: asociar `terminal_id` (impreso en el Point) o `pos_
 ## Variables de entorno requeridas
 
 ```env
-# Mercado Pago
-MP_ACCESS_TOKEN=...
+# Mercado Pago — credenciales de la APP (OAuth), no del vendedor.
+# El access token de cada vendedor se obtiene por OAuth y vive en `mp_connections`,
+# por cliente. Ya NO se usa un MP_ACCESS_TOKEN global (sin fallback).
+MP_CLIENT_ID=...
+MP_CLIENT_SECRET=...
 MP_WEBHOOK_SECRET=...
 
 # Servidor
@@ -252,6 +267,7 @@ JWT_SECRET=...
 
 ## Convenciones del proyecto
 
+- **NO deployar a producción salvo pedido explícito de Javier.** Los cambios se acumulan localmente (verificados con build + curl) y se suben varios juntos cuando él lo indique. Deploy: `npm run build:web` + `railway up --service tecnovend-api --ci` desde `server/`.
 - IDs de máquinas: formato `machine_XXX` (ej: `machine_001`)
 - IDs de pulsos: formato `p_XXXX` (ej: `p_8f3a`)
 - Montos: siempre en **ARS enteros** (no usar centavos ni floats)

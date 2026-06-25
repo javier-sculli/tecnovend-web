@@ -4,6 +4,8 @@
   "scripts": {
     "install:all": "npm install --prefix server && npm install --prefix client",
     "dev:server": "npm run dev --prefix server",
-    "dev:client": "npm run dev --prefix client"
+    "dev:client": "VITE_API_URL=https://tecnovend-api-production.up.railway.app npm run dev --prefix client",
+    "dev:client:local": "npm run dev --prefix client",
+    "build:web": "npm run build --prefix client && rm -rf server/public && cp -r client/dist server/public"
   }
 }

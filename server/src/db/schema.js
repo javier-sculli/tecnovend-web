@@ -57,6 +57,28 @@ db.exec(`
   );
 `);
 
+// Usuarios y membresías a organizaciones (clients).
+// Un usuario puede pertenecer a varias organizaciones, con un rol por cada una.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    email         TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS memberships (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id),
+    client_id  TEXT NOT NULL REFERENCES clients(id),
+    role       TEXT NOT NULL CHECK(role IN ('administrador','operativo')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_memberships_user_client ON memberships(user_id, client_id);
+`);
+
 // Eventos de la máquina (heartbeat, config, fuera/dentro de servicio).
 // Los ACK y pagos NO se duplican acá: se derivan de pulse_queue y payments.
 db.exec(`
@@ -69,6 +91,21 @@ db.exec(`
   );
 `);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_machine_events_machine ON machine_events(machine_id, created_at)`);
+
+// Conexión de Mercado Pago por cliente. Cada cliente conecta su propia cuenta
+// (OAuth) y su local/cajas viven ahí. mp_user_id es la cuenta colectora de MP,
+// que el webhook usa para rutear cada pago al cliente dueño.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mp_connections (
+    client_id     TEXT PRIMARY KEY REFERENCES clients(id),
+    access_token  TEXT NOT NULL,
+    refresh_token TEXT,
+    expires_at    TEXT,
+    mp_user_id    TEXT,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mp_connections_user ON mp_connections(mp_user_id)`);
 
 // Tabla de logs de webhooks entrantes (para debug)
 db.exec(`
@@ -113,6 +150,10 @@ for (const ddl of [
   'ALTER TABLE machines ADD COLUMN wifi_ssid TEXT',
   'ALTER TABLE machines ADD COLUMN wifi_user TEXT',
   'ALTER TABLE machines ADD COLUMN wifi_password TEXT',
+  // Precio del QR de MP: 'dynamic' = el cliente tipea el monto en la app;
+  // 'fixed' = el QR queda cargado con una orden por qr_fixed_amount.
+  "ALTER TABLE machines ADD COLUMN qr_mode TEXT NOT NULL DEFAULT 'dynamic'",
+  'ALTER TABLE machines ADD COLUMN qr_fixed_amount INTEGER',
   // Reembolsos en MP cuando el pulso expira o la máquina está fuera de servicio.
   // mp_id_kind: si mp_payment_id es un id de 'order' (QR, API nueva) o de 'payment' (legacy).
   // refund_status: null = sin reembolso; 'pending' | 'done' | 'failed'.
@@ -120,6 +161,14 @@ for (const ddl of [
   "ALTER TABLE payments ADD COLUMN refund_status TEXT",
   "ALTER TABLE payments ADD COLUMN refunded_at TEXT",
   "ALTER TABLE payments ADD COLUMN refund_error TEXT",
+  // Monto reembolsado acumulado (ARS). Soporta reembolsos PARCIALES: cuando el
+  // cliente paga de más en QR libre (ej. $400 con pulse_value $250) se le devuelve
+  // el excedente ($150) y el pago queda refund_status='partial'. 0/null = nada.
+  "ALTER TABLE payments ADD COLUMN refunded_amount INTEGER",
+  // arduino_id (identificador del Arduino) y device_serial (serial de placa) son
+  // lo mismo. Backfill: las máquinas viejas cargaban el serial en device_serial y
+  // arduino_id quedaba vacío → copiamos para que el serial identifique los requests.
+  "UPDATE machines SET arduino_id = device_serial WHERE (arduino_id IS NULL OR arduino_id = '') AND device_serial IS NOT NULL AND device_serial != ''",
 ]) {
   try { db.exec(ddl); } catch { /* ya existe */ }
 }
