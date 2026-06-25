@@ -74,7 +74,16 @@ async function migrateTable(tableName, pkeyName = 'id') {
 
   let count = 0;
   for (const row of rows) {
-    const values = columns.map(col => row[col]);
+    const values = columns.map(col => {
+      let val = row[col];
+      // Convertir strings numéricos de época a Date objects para campos TIMESTAMP
+      if (col === 'expires_at' && tableName === 'mp_connections' && val) {
+        if (/^\d+$/.test(String(val))) {
+          val = new Date(parseInt(val, 10));
+        }
+      }
+      return val;
+    });
     const res = await pgPool.query(pgSql, values);
     if (res.rowCount > 0) {
       count++;
