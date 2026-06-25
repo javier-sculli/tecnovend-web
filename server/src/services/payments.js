@@ -22,9 +22,9 @@ export function isOurOrderRef(ref) {
 
 // Resuelve la máquina por su pos_id, sin filtrar por status: el pago SIEMPRE se
 // registra (CLAUDE.md). El status define después si corresponden pulsos o no.
-export function findMachine(posId) {
+export async function findMachine(posId) {
   if (!posId) return null;
-  return db.prepare('SELECT * FROM machines WHERE pos_id = ? OR mp_pos_id = ?')
+  return await db.prepare('SELECT * FROM machines WHERE pos_id = ? OR mp_pos_id = ?')
     .get(posId, posId) || null;
 }
 
@@ -32,15 +32,15 @@ export function findMachine(posId) {
 // es un id de 'order' o de 'payment' (define por qué endpoint se reembolsa).
 // `refundPending` marca el pago para reembolso (caso fuera de servicio).
 // Devuelve el paymentId creado, o null si era duplicado.
-export function enqueuePayment(machineId, mpId, amount, pulses, { idKind, refundPending = false } = {}) {
-  const existing = db.prepare('SELECT id FROM payments WHERE mp_payment_id = ?').get(mpId);
+export async function enqueuePayment(machineId, mpId, amount, pulses, { idKind, refundPending = false } = {}) {
+  const existing = await db.prepare('SELECT id FROM payments WHERE mp_payment_id = ?').get(mpId);
   if (existing) return null; // deduplicación
 
   const paymentId = genPaymentId();
 
   // Siempre registramos el pago en la BD (aunque pulses=0 por monto insuficiente)
   const status = 'approved'; // MP aprobó el pago — independiente de pulsos
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (id, machine_id, mp_payment_id, amount, method, status, pulses_calculated, mp_id_kind, refund_status)
     VALUES (?, ?, ?, ?, 'qr', ?, ?, ?, ?)
   `).run(paymentId, machineId, mpId, amount, status, pulses, idKind ?? null, refundPending ? 'pending' : null);
@@ -51,7 +51,7 @@ export function enqueuePayment(machineId, mpId, amount, pulses, { idKind, refund
     // OJO: expires_at se calcula con datetime() de SQLite (formato 'YYYY-MM-DD
     // HH:MM:SS') para que coincida con datetime('now') del barrido. Un ISO de JS
     // (con 'T' y 'Z') compara como string SIEMPRE mayor → el pulso nunca expira.
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
       VALUES (?, ?, ?, 1, ?, datetime('now', '+3 minutes'))
     `).run(genPulseId(), machineId, paymentId, pulses);
@@ -59,3 +59,4 @@ export function enqueuePayment(machineId, mpId, amount, pulses, { idKind, refund
 
   return paymentId;
 }
+

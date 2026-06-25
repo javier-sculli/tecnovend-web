@@ -24,14 +24,14 @@ function posOf(payment) {
 
 // Registra un pago aprobado traído por search. Devuelve {machine, amount, pulses,
 // noDispensa} si lo registró por primera vez, o null si se salta o ya existía.
-function registerPayment(payment) {
+async function registerPayment(payment) {
   // Saltamos los pagos de NUESTRAS órdenes: ya entran por el webhook de `order`
   // bajo el id de la ORDEN; acá el search trae el id del PAGO (distinto) y los
   // duplicaría. Solo capturamos los libres/tipeados (sin 'tv_'). Ver isOurOrderRef.
   if (isOurOrderRef(payment.external_reference)) return null;
 
   const posId = posOf(payment);
-  const machine = findMachine(posId);
+  const machine = await findMachine(posId);
   if (!machine) return null; // caja ajena (otro proveedor conviviendo en la cuenta)
 
   const amount = Math.floor(Number(payment.transaction_amount) || 0);
@@ -43,13 +43,13 @@ function registerPayment(payment) {
   // entero (full refund vía refundPending); con pulsos y resto, es parcial.
   const excess = amount - pulses * machine.pulse_value;
   const noDispensa = pulses < 1;
-  const queued = enqueuePayment(machine.id, String(payment.id), amount, pulses, { idKind: 'payment', refundPending: noDispensa });
+  const queued = await enqueuePayment(machine.id, String(payment.id), amount, pulses, { idKind: 'payment', refundPending: noDispensa });
   if (!queued) return null; // duplicado (ya estaba) — caso normal, no es novedad
 
   // Pagó de más (ej. $400 con pulse_value $250 → 1 pulso, sobran $150): se devuelve
   // solo el excedente; el pulso dispensa normal. El caso 0 pulsos ya lo cubre
   // refundPending (devuelve todo). Misma regla: no retener lo que no dispensa.
-  if (!noDispensa && excess > 0) flagExcessForRefund(queued);
+  if (!noDispensa && excess > 0) await flagExcessForRefund(queued);
 
   return { machine, amount, pulses, excess, noDispensa };
 }
@@ -69,7 +69,7 @@ async function reconcileClient(clientId, { beginDate } = {}) {
   let hayReembolso = false;
   for (const p of results) {
     if (p.status !== 'approved') continue;
-    const r = registerPayment(p);
+    const r = await registerPayment(p);
     if (!r) continue;
     nuevos++;
     if (r.noDispensa || r.excess > 0) hayReembolso = true;
@@ -84,7 +84,7 @@ async function reconcileClient(clientId, { beginDate } = {}) {
 // Cuando el Arduino pollea, forzamos un refresco de la cuenta de su máquina: es
 // el momento justo (alguien acaba de pagar y espera el producto). Throttle por
 // cliente para no pegarle a MP en cada poll de 3s. Fire-and-forget: no bloquea
-// la respuesta del poll; el pago aparece en el poll siguiente (≤3s después).
+// la respuesta del poll; el pago recién entrado aparece en el poll siguiente (≤3s después).
 const ONDEMAND_THROTTLE_MS = 5_000;
 const _lastByClient = new Map(); // client_id → último timestamp reconciliado
 
@@ -102,7 +102,7 @@ export function reconcileMachineSoon(machine) {
 // Corre cada pocos minutos para que el dashboard quede coherente aunque ningún
 // Arduino esté polleando. Ventana más amplia (6h) + dedup cubre huecos/reinicios.
 export async function reconcileAll() {
-  const clients = listConnectedClientIds();
+  const clients = await listConnectedClientIds();
   let total = 0;
   for (const cid of clients) {
     total += await reconcileClient(cid, { beginDate: 'NOW-6HOURS' });

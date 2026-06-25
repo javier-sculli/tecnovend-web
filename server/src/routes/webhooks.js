@@ -7,9 +7,9 @@ import { findMachine, enqueuePayment, isOurOrderRef } from '../services/payments
 
 const router = Router();
 
-function logWebhook(fields) {
+async function logWebhook(fields) {
   try {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO webhook_logs (type, action, data_id, raw_body, mp_response, pos_id_found, machine_found, result)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -38,7 +38,7 @@ router.post('/mercadopago', async (req, res) => {
   // consultar el pago con SU token. Si no matchea (a veces viene el user_id de la
   // app, no el de la cuenta colectora), getPaymentAny/getOrderAny prueban con el
   // resto de las cuentas conectadas. No hay token global.
-  const ownerClientId = clientByMpUser(req.body?.user_id);
+  const ownerClientId = await clientByMpUser(req.body?.user_id);
   console.log(`[webhook-in] type=${type} action=${action} dataId=${dataId} user_id=${req.body?.user_id} cliente=${ownerClientId ?? 'global'} query=${JSON.stringify(req.query)}`);
 
   try {
@@ -52,7 +52,7 @@ router.post('/mercadopago', async (req, res) => {
     }
 
     if (!dataId) {
-      logWebhook({ type, action, dataId: null, rawBody: req.body, result: 'ERROR: sin data.id' });
+      await logWebhook({ type, action, dataId: null, rawBody: req.body, result: 'ERROR: sin data.id' });
       return;
     }
 
@@ -63,24 +63,24 @@ router.post('/mercadopago', async (req, res) => {
         ({ order } = await getOrderAny(dataId, ownerClientId));
       } catch (e) {
         console.error(`[webhook] getOrder(${dataId}) falló:`, e.message);
-        logWebhook({ type, action, dataId, rawBody: req.body, result: `ERROR getOrder: ${e.message}` });
+        await logWebhook({ type, action, dataId, rawBody: req.body, result: `ERROR getOrder: ${e.message}` });
         return;
       }
 
       console.log(`[webhook] order fetched: status=${order.status} config=${JSON.stringify(order.config)} total=${order.total_amount}`);
 
       if (order.status !== 'processed') {
-        logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, result: `SKIP: order.status=${order.status}` });
+        await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, result: `SKIP: order.status=${order.status}` });
         return;
       }
 
       const posId = order.config?.qr?.external_pos_id || order.config?.point?.external_pos_id || '';
-      const machine = findMachine(posId);
+      const machine = await findMachine(posId);
       console.log(`[webhook] order posId="${posId}" machine=${machine?.id ?? 'null'}`);
 
       if (!machine) {
         console.warn(`[webhook] order ${dataId} sin máquina para pos_id="${posId}"`);
-        logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, posIdFound: posId, result: `ERROR: sin máquina para pos_id="${posId}"` });
+        await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, posIdFound: posId, result: `ERROR: sin máquina para pos_id="${posId}"` });
         return;
       }
 
@@ -93,7 +93,7 @@ router.post('/mercadopago', async (req, res) => {
       // pulse_value, ej. subpago en QR libre) el pago se reembolsa solo. Nunca
       // queda plata cobrada sin producto.
       const noDispensa = pulses < 1;
-      const queued = enqueuePayment(machine.id, String(dataId), amount, pulses, { idKind: 'order', refundPending: noDispensa });
+      const queued = await enqueuePayment(machine.id, String(dataId), amount, pulses, { idKind: 'order', refundPending: noDispensa });
       const result = !queued ? 'SKIP: pago duplicado'
         : outOfService ? `OK (fuera de servicio: ${machine.status}): $${amount} registrado sin pulsos · reembolsando`
         : pulses >= 1 ? `OK: ${pulses} pulsos → ${machine.id}`
@@ -101,7 +101,7 @@ router.post('/mercadopago', async (req, res) => {
       if (queued && pulses >= 1) console.log(`[webhook] ✓ order ${dataId} → $${amount} → ${pulses} pulsos → ${machine.id}`);
       else if (queued && outOfService) console.log(`[webhook] ⛔ order ${dataId} → $${amount}: ${machine.id} fuera de servicio (${machine.status}) → reembolso`);
       else if (queued) console.log(`[webhook] ⚠ order ${dataId} → $${amount} sin pulsos (< pulse_value $${machine.pulse_value}) → reembolso`);
-      logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, posIdFound: posId, machineFound: machine.id, result });
+      await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, posIdFound: posId, machineFound: machine.id, result });
       if (queued && noDispensa) await processPendingRefunds();
       // Precio fijo: la orden se consumió con este pago → re-armar el QR.
       if (queued) await armFixedQR(machine);
@@ -115,7 +115,7 @@ router.post('/mercadopago', async (req, res) => {
         ({ payment } = await getPaymentAny(dataId, ownerClientId));
       } catch (e) {
         console.error(`[webhook] getPayment(${dataId}) falló:`, e.message);
-        logWebhook({ type, action, dataId, rawBody: req.body, result: `ERROR getPayment: ${e.message}` });
+        await logWebhook({ type, action, dataId, rawBody: req.body, result: `ERROR getPayment: ${e.message}` });
         return;
       }
 
@@ -128,23 +128,23 @@ router.post('/mercadopago', async (req, res) => {
       console.log(`[webhook] payment ${dataId} status=${payment.status} pos_id="${posId}" amount=${payment.transaction_amount}`);
 
       if (payment.status !== 'approved') {
-        logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount: payment.transaction_amount }, posIdFound: posId, result: `SKIP: status=${payment.status}` });
+        await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount: payment.transaction_amount }, posIdFound: posId, result: `SKIP: status=${payment.status}` });
         return;
       }
 
       // Orden NUESTRA (tv_): ya la maneja el webhook de `order` bajo el id de la
       // orden. Por id de pago la duplicaría (ver isOurOrderRef). Solo libres acá.
       if (isOurOrderRef(payment.external_reference)) {
-        logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { external_reference: payment.external_reference }, result: 'SKIP payment: orden propia (tv_) — la maneja el webhook order' });
+        await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { external_reference: payment.external_reference }, result: 'SKIP payment: orden propia (tv_) — la maneja el webhook order' });
         return;
       }
 
-      const machine = findMachine(posId);
+      const machine = await findMachine(posId);
       console.log(`[webhook] payment posId="${posId}" machine=${machine?.id ?? 'null'}`);
 
       if (!machine) {
         console.warn(`[webhook] pago ${dataId} sin máquina para pos_id="${posId}"`);
-        logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount: payment.transaction_amount }, posIdFound: posId, result: `ERROR: sin máquina para pos_id="${posId}"` });
+        await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount: payment.transaction_amount }, posIdFound: posId, result: `ERROR: sin máquina para pos_id="${posId}"` });
         return;
       }
 
@@ -155,7 +155,7 @@ router.post('/mercadopago', async (req, res) => {
       const pulses = outOfService ? 0 : Math.floor(amount / machine.pulse_value);
       // Regla única: 0 pulsos (fuera de servicio o subpago) → reembolso automático.
       const noDispensa = pulses < 1;
-      const queued = enqueuePayment(machine.id, String(dataId), amount, pulses, { idKind: 'payment', refundPending: noDispensa });
+      const queued = await enqueuePayment(machine.id, String(dataId), amount, pulses, { idKind: 'payment', refundPending: noDispensa });
       const result = !queued ? 'SKIP: pago duplicado'
         : outOfService ? `OK (fuera de servicio: ${machine.status}): $${amount} registrado sin pulsos · reembolsando`
         : pulses >= 1 ? `OK: ${pulses} pulsos → ${machine.id}`
@@ -163,7 +163,7 @@ router.post('/mercadopago', async (req, res) => {
       if (queued && pulses >= 1) console.log(`[webhook] ✓ pago ${dataId} → $${amount} → ${pulses} pulsos → ${machine.id}`);
       else if (queued && outOfService) console.log(`[webhook] ⛔ pago ${dataId} → $${amount}: ${machine.id} fuera de servicio (${machine.status}) → reembolso`);
       else if (queued) console.log(`[webhook] ⚠ pago ${dataId} → $${amount} sin pulsos (< pulse_value $${machine.pulse_value}) → reembolso`);
-      logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount }, posIdFound: posId, machineFound: machine.id, result });
+      await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount }, posIdFound: posId, machineFound: machine.id, result });
       if (queued && noDispensa) await processPendingRefunds();
       // Precio fijo: la orden se consumió con este pago → re-armar el QR.
       if (queued) await armFixedQR(machine);
@@ -177,15 +177,15 @@ router.post('/mercadopago', async (req, res) => {
     // merchant_order traía el MISMO pago con OTRO id (id de pago vs id de orden) y
     // solo servía para duplicar (bug machine_894). La dejamos solo logueada.
     if (type === 'merchant_order' || type === 'topic_merchant_order_wh') {
-      logWebhook({ type, action, dataId, rawBody: req.body, result: 'IGNORADO merchant_order (cubierto por webhook order + reconciliación)' });
+      await logWebhook({ type, action, dataId, rawBody: req.body, result: 'IGNORADO merchant_order (cubierto por webhook order + reconciliación)' });
       return;
     }
 
     console.log(`[webhook] tipo no manejado: type=${type} action=${action}`);
-    logWebhook({ type, action, dataId, rawBody: req.body, result: `NO_HANDLER: type=${type} action=${action}` });
+    await logWebhook({ type, action, dataId, rawBody: req.body, result: `NO_HANDLER: type=${type} action=${action}` });
   } catch (err) {
     console.error('[webhook]', err.message);
-    logWebhook({ type, action, dataId: dataId ?? null, rawBody: req.body, result: `EXCEPTION: ${err.message}` });
+    await logWebhook({ type, action, dataId: dataId ?? null, rawBody: req.body, result: `EXCEPTION: ${err.message}` });
   }
 });
 

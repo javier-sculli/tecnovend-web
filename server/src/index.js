@@ -14,10 +14,12 @@ import debugRouter from './routes/debug.js';
 import docsRouter from './routes/docs.js';
 
 // Inicializar BD (crea tablas y ejecuta migraciones)
-import './db/schema.js';
+import { initDb } from './db/schema.js';
 import { expireStalePulses } from './services/pulses.js';
 import { flagPaymentsForRefund, processPendingRefunds } from './services/refunds.js';
 import { reconcileAll } from './services/reconcile.js';
+
+await initDb();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -65,10 +67,10 @@ setInterval(async () => {
   if (_sweeping) return; // evitar solapamiento si un reembolso tarda
   _sweeping = true;
   try {
-    const expired = expireStalePulses();
+    const expired = await expireStalePulses();
     if (expired.length > 0) {
       console.log(`[pulses] ${expired.length} pulso(s) expirado(s) sin ACK`);
-      flagPaymentsForRefund(expired.map(p => p.payment_id));
+      await flagPaymentsForRefund(expired.map(p => p.payment_id));
     }
     await processPendingRefunds();
   } catch (e) {

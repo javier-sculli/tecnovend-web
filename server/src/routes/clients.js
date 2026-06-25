@@ -10,9 +10,9 @@ function genClientId() {
 
 // Listado de organizaciones. Si hay sesión, solo las del usuario (con su rol);
 // sin sesión (auth desactivada por ahora), todas.
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const clients = req.user
-    ? db.prepare(`
+    ? await db.prepare(`
         SELECT c.*, m.role AS my_role,
           (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id) AS machine_count
         FROM clients c
@@ -20,7 +20,7 @@ router.get('/', (req, res) => {
         WHERE m.user_id = ?
         ORDER BY c.created_at DESC
       `).all(req.user.id)
-    : db.prepare(`
+    : await db.prepare(`
         SELECT c.*,
           (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id) AS machine_count
         FROM clients c
@@ -30,14 +30,14 @@ router.get('/', (req, res) => {
 });
 
 // Crear cliente
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const {
     name, contact_name, contact_email, contact_phone, notes,
   } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name es requerido' });
 
   const id = genClientId();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO clients
       (id, name, contact_name, contact_email, contact_phone, notes)
     VALUES (?,?,?,?,?,?)
@@ -46,32 +46,32 @@ router.post('/', (req, res) => {
   );
   // Si hay sesión, el creador queda como administrador de la nueva organización.
   if (req.user) {
-    db.prepare('INSERT INTO memberships (id, user_id, client_id, role) VALUES (?,?,?,?)')
+    await db.prepare('INSERT INTO memberships (id, user_id, client_id, role) VALUES (?,?,?,?)')
       .run('mem_' + crypto.randomBytes(3).toString('hex'), req.user.id, id, 'administrador');
   }
   res.status(201).json({ id });
 });
 
 // Detalle de cliente + sus máquinas
-router.get('/:id', (req, res) => {
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id);
+router.get('/:id', async (req, res) => {
+  const client = await db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id);
   if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
 
-  const machines = db.prepare(
+  const machines = await db.prepare(
     'SELECT id, name, location, status, last_seen_at FROM machines WHERE client_id = ? ORDER BY created_at DESC'
   ).all(req.params.id);
   res.json({ ...client, machines });
 });
 
 // Actualizar cliente (datos de contacto, notas, etc.)
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const {
     name, contact_name, contact_email, contact_phone, notes,
   } = req.body || {};
-  const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(req.params.id);
+  const client = await db.prepare('SELECT id FROM clients WHERE id = ?').get(req.params.id);
   if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE clients SET
       name          = COALESCE(?, name),
       contact_name  = COALESCE(?, contact_name),

@@ -15,7 +15,7 @@ const orgOf = (req) => req.query.org || req.headers['x-org-id'] || null;
 
 // GET /api/mp/auth?org=<clientId> — inicia el OAuth para conectar la cuenta MP
 // de ESE cliente. El local y las cajas van a vivir en su cuenta.
-router.get('/auth', (req, res) => {
+router.get('/auth', async (req, res) => {
   const mpAppClientId = process.env.MP_CLIENT_ID;
   if (!mpAppClientId) return res.status(500).json({ error: 'MP_CLIENT_ID no configurado' });
 
@@ -27,8 +27,8 @@ router.get('/auth', (req, res) => {
   // Guardar state + el cliente que conecta, para recuperarlos en el callback.
   const upsert = db.prepare(`INSERT INTO config (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`);
-  upsert.run('oauth_state', state);
-  upsert.run('oauth_state_org', org);
+  await upsert.run('oauth_state', state);
+  await upsert.run('oauth_state_org', org);
 
   const url = new URL('https://auth.mercadopago.com/authorization');
   url.searchParams.set('client_id', mpAppClientId);
@@ -46,11 +46,12 @@ router.get('/auth/callback', async (req, res) => {
   if (!code) return res.status(400).send('Faltó el código de autorización de MP.');
 
   // Verificar state y recuperar el cliente que inició la conexión.
-  const savedState = db.prepare('SELECT value FROM config WHERE key = ?').get('oauth_state');
+  const savedState = await db.prepare('SELECT value FROM config WHERE key = ?').get('oauth_state');
   if (!savedState || savedState.value !== state) {
     return res.status(400).send('State inválido — posible ataque CSRF.');
   }
-  const org = db.prepare('SELECT value FROM config WHERE key = ?').get('oauth_state_org')?.value || null;
+  const orgRow = await db.prepare('SELECT value FROM config WHERE key = ?').get('oauth_state_org');
+  const org = orgRow?.value || null;
   if (!org) return res.status(400).send('No se pudo determinar el cliente de la conexión.');
 
   const mpAppClientId = process.env.MP_CLIENT_ID;
@@ -72,7 +73,7 @@ router.get('/auth/callback', async (req, res) => {
     const data = await tokenRes.json();
     if (!tokenRes.ok) throw new Error(data.message || JSON.stringify(data));
 
-    mp.setStoredToken(org, {
+    await mp.setStoredToken(org, {
       token: data.access_token,
       refreshToken: data.refresh_token,
       expiresIn: data.expires_in,
@@ -82,7 +83,7 @@ router.get('/auth/callback', async (req, res) => {
 
     // Limpiar el state de un solo uso + el token global legacy: ya no hay
     // fallback, cada cliente usa exclusivamente su propia cuenta conectada.
-    db.prepare(`DELETE FROM config WHERE key IN
+    await db.prepare(`DELETE FROM config WHERE key IN
       ('oauth_state', 'oauth_state_org', 'mp_access_token', 'mp_refresh_token', 'mp_token_expires_at')`).run();
 
     res.redirect('/?mp_connected=1');
@@ -93,10 +94,10 @@ router.get('/auth/callback', async (req, res) => {
 });
 
 // POST /api/mp/auth/disconnect — desvincula la cuenta MP del cliente activo
-router.post('/auth/disconnect', (req, res) => {
+router.post('/auth/disconnect', async (req, res) => {
   const org = orgOf(req);
   if (!org) return res.status(400).json({ error: 'Faltó el cliente (org)' });
-  db.prepare('DELETE FROM mp_connections WHERE client_id = ?').run(org);
+  await db.prepare('DELETE FROM mp_connections WHERE client_id = ?').run(org);
   res.json({ ok: true });
 });
 
@@ -106,7 +107,7 @@ router.post('/auth/disconnect', (req, res) => {
 // refleja si ESE cliente tiene su propia cuenta conectada (no el token global).
 router.get('/status', async (req, res) => {
   const org = orgOf(req);
-  if (!org || !mp.hasConnection(org)) return res.json({ connected: false });
+  if (!org || !(await mp.hasConnection(org))) return res.json({ connected: false });
   try {
     const userId = await mp.getUserId(org);
     res.json({ connected: true, user_id: userId, oauth: true });
@@ -149,7 +150,7 @@ router.get('/pos', async (req, res) => {
 // POST /api/mp/pos/:machineId — crear (o reutilizar) la caja de la máquina en el
 // local default y asociarla. Misma lógica que usa el alta de máquina.
 router.post('/pos/:machineId', async (req, res) => {
-  const machine = db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
+  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
 
   try {
@@ -163,7 +164,7 @@ router.post('/pos/:machineId', async (req, res) => {
 
 // GET /api/mp/pos/:machineId — obtener datos del POS + QR
 router.get('/pos/:machineId', async (req, res) => {
-  const machine = db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
+  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
   if (!machine.mp_pos_id) return res.status(404).json({ error: 'Sin POS configurado', code: 'no_pos' });
 
@@ -180,7 +181,7 @@ router.put('/pos/:machineId/order', async (req, res) => {
   const { amount, description } = req.body;
   if (!amount || amount < 15) return res.status(400).json({ error: 'amount requerido y debe ser >= $15 (mínimo de Mercado Pago)' });
 
-  const machine = db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
+  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
   if (!machine.pos_id) return res.status(404).json({ error: 'Sin POS configurado', code: 'no_pos' });
   if (machine.status !== 'active') return res.status(409).json({ error: 'Máquina fuera de servicio — no se puede generar QR', code: 'out_of_service' });
@@ -211,7 +212,7 @@ router.get('/orders/:orderId', async (req, res) => {
 
 // DELETE /api/mp/pos/:machineId/order — limpiar orden del QR
 router.delete('/pos/:machineId/order', async (req, res) => {
-  const machine = db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
+  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
   if (!machine || !machine.pos_id) return res.status(404).json({ error: 'Sin POS' });
 
   try {
@@ -223,7 +224,7 @@ router.delete('/pos/:machineId/order', async (req, res) => {
 });
 
 // GET /api/mp/payments — pagos recientes de la BD local
-router.get('/payments', (req, res) => {
+router.get('/payments', async (req, res) => {
   const { machineId, since, limit = 20 } = req.query;
   let query = 'SELECT * FROM payments WHERE 1=1';
   const args = [];
@@ -231,7 +232,7 @@ router.get('/payments', (req, res) => {
   if (since) { query += ' AND created_at > ?'; args.push(since); }
   query += ' ORDER BY created_at DESC LIMIT ?';
   args.push(+limit);
-  res.json(db.prepare(query).all(...args));
+  res.json(await db.prepare(query).all(...args));
 });
 
 // POST /api/mp/payments/:id/refund — reembolso manual de un pago (botón Devolver)

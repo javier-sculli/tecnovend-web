@@ -22,7 +22,7 @@ function genPulseId() { return 'p_' + crypto.randomBytes(2).toString('hex'); }
 
 // POST /api/debug/simulate-payment — simula un pago aprobado sin pasar por MP
 // Body: { machine_id, amount }
-router.post('/simulate-payment', (req, res) => {
+router.post('/simulate-payment', async (req, res) => {
   if (process.env.NODE_ENV === 'production') {
     return res.status(403).json({ error: 'No disponible en producción' });
   }
@@ -30,7 +30,7 @@ router.post('/simulate-payment', (req, res) => {
   const { machine_id, amount = 500 } = req.body;
   if (!machine_id) return res.status(400).json({ error: 'machine_id requerido' });
 
-  const machine = db.prepare('SELECT * FROM machines WHERE id = ? AND status = ?').get(machine_id, 'active');
+  const machine = await db.prepare('SELECT * FROM machines WHERE id = ? AND status = ?').get(machine_id, 'active');
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada o inactiva' });
 
   const amt = Math.floor(Number(amount));
@@ -45,14 +45,14 @@ router.post('/simulate-payment', (req, res) => {
   const paymentId = crypto.randomUUID();
   const pulseId = genPulseId();
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO payments (id, machine_id, mp_payment_id, amount, method, status, pulses_calculated)
     VALUES (?, ?, ?, ?, 'qr', 'approved', ?)
   `).run(paymentId, machine_id, fakeMpId, amt, pulses);
 
   // expires_at en formato datetime() de SQLite (no ISO de JS) para que el barrido
   // de expiración pueda compararlo contra datetime('now'). Ver nota en webhooks.js.
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
     VALUES (?, ?, ?, 1, ?, datetime('now', '+10 minutes'))
   `).run(pulseId, machine_id, paymentId, pulses);
@@ -70,9 +70,9 @@ router.post('/simulate-payment', (req, res) => {
 });
 
 // GET /api/debug/webhook-logs?limit=20 — últimos webhooks recibidos (read-only, siempre disponible)
-router.get('/webhook-logs', (req, res) => {
+router.get('/webhook-logs', async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 20, 100);
-  const rows = db.prepare(
+  const rows = await db.prepare(
     'SELECT * FROM webhook_logs ORDER BY id DESC LIMIT ?'
   ).all(limit);
   res.json(rows);
@@ -83,7 +83,7 @@ router.get('/inspect/order/:id', async (req, res) => {
   try {
     const order = await getOrder(req.params.id, req.headers['x-org-id'] || null);
     const posId = order.config?.qr?.external_pos_id || order.config?.point?.external_pos_id || '';
-    const machine = db.prepare('SELECT id, name, pos_id, mp_pos_id FROM machines WHERE (pos_id = ? OR mp_pos_id = ?) AND status = ?')
+    const machine = await db.prepare('SELECT id, name, pos_id, mp_pos_id FROM machines WHERE (pos_id = ? OR mp_pos_id = ?) AND status = ?')
       .get(posId, posId, 'active');
     res.json({ order, pos_id_extracted: posId, machine_match: machine ?? null });
   } catch (e) {
@@ -101,7 +101,7 @@ router.get('/inspect/payment/:id', async (req, res) => {
       payment.pos_id ||
       '';
     const posId = String(posIdRaw);
-    const machine = db.prepare('SELECT id, name, pos_id, mp_pos_id FROM machines WHERE (pos_id = ? OR mp_pos_id = ?) AND status = ?')
+    const machine = await db.prepare('SELECT id, name, pos_id, mp_pos_id FROM machines WHERE (pos_id = ? OR mp_pos_id = ?) AND status = ?')
       .get(posId, posId, 'active');
     res.json({
       payment: {
@@ -124,8 +124,8 @@ router.get('/inspect/payment/:id', async (req, res) => {
 });
 
 // GET /api/debug/machines — máquinas con sus POS IDs para verificar configuración
-router.get('/machines', (req, res) => {
-  const rows = db.prepare('SELECT id, name, pos_id, mp_pos_id, mp_store_id, status, pulse_value, min_payment FROM machines').all();
+router.get('/machines', async (req, res) => {
+  const rows = await db.prepare('SELECT id, name, pos_id, mp_pos_id, mp_store_id, status, pulse_value, min_payment FROM machines').all();
   res.json(rows);
 });
 

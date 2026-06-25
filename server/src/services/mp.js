@@ -11,16 +11,16 @@ const tokenKey = (clientId) => clientId || '_global';
 // Token de MP del cliente. SIN fallback global: cada cliente usa exclusivamente
 // su propia cuenta conectada. Si no conectó, no hay token y la operación falla
 // con un error claro. Nunca se comparte una cuenta de MP entre clientes.
-export function getStoredToken(clientId) {
+export async function getStoredToken(clientId) {
   if (!clientId) return null;
-  const row = db.prepare('SELECT access_token FROM mp_connections WHERE client_id = ?').get(clientId);
+  const row = await db.prepare('SELECT access_token FROM mp_connections WHERE client_id = ?').get(clientId);
   return row?.access_token || null;
 }
 
 // Guarda la conexión MP de un cliente: token + refresh + user_id de la cuenta.
 // El user_id es lo que después usa el webhook para rutear cada pago al cliente.
-export function setStoredToken(clientId, { token, refreshToken, expiresIn, mpUserId } = {}) {
-  db.prepare(`
+export async function setStoredToken(clientId, { token, refreshToken, expiresIn, mpUserId } = {}) {
+  await db.prepare(`
     INSERT INTO mp_connections (client_id, access_token, refresh_token, expires_at, mp_user_id, updated_at)
     VALUES (?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(client_id) DO UPDATE SET
@@ -40,21 +40,23 @@ export function setStoredToken(clientId, { token, refreshToken, expiresIn, mpUse
 }
 
 // ¿El cliente tiene una conexión MP propia? (para el gate de alta de máquinas)
-export function hasConnection(clientId) {
+export async function hasConnection(clientId) {
   if (!clientId) return false;
-  return !!db.prepare('SELECT 1 FROM mp_connections WHERE client_id = ?').get(clientId);
+  const row = await db.prepare('SELECT 1 FROM mp_connections WHERE client_id = ?').get(clientId);
+  return !!row;
 }
 
 // Resuelve el cliente dueño de una cuenta MP por su user_id (lo usa el webhook).
-export function clientByMpUser(mpUserId) {
+export async function clientByMpUser(mpUserId) {
   if (mpUserId == null) return null;
-  const row = db.prepare('SELECT client_id FROM mp_connections WHERE mp_user_id = ?').get(String(mpUserId));
+  const row = await db.prepare('SELECT client_id FROM mp_connections WHERE mp_user_id = ?').get(String(mpUserId));
   return row?.client_id || null;
 }
 
 // Todos los clientes con cuenta MP conectada.
-export function listConnectedClientIds() {
-  return db.prepare('SELECT client_id FROM mp_connections').all().map(r => r.client_id);
+export async function listConnectedClientIds() {
+  const rows = await db.prepare('SELECT client_id FROM mp_connections').all();
+  return rows.map(r => r.client_id);
 }
 
 // Trae un pago/orden probando primero el cliente resuelto por user_id y, si no
@@ -63,7 +65,8 @@ export function listConnectedClientIds() {
 // Es el fallback para avisos cuyo user_id no matchea (ej: lo manda la cuenta de
 // la app, no la colectora). No reintroduce token global: solo cuentas conectadas.
 export async function getPaymentAny(paymentId, preferredClientId) {
-  const ids = [preferredClientId, ...listConnectedClientIds().filter(c => c !== preferredClientId)].filter(Boolean);
+  const connected = await listConnectedClientIds();
+  const ids = [preferredClientId, ...connected.filter(c => c !== preferredClientId)].filter(Boolean);
   if (ids.length === 0) throw new Error('No hay cuentas de Mercado Pago conectadas');
   let lastErr;
   for (const cid of ids) {
@@ -74,7 +77,8 @@ export async function getPaymentAny(paymentId, preferredClientId) {
 }
 
 export async function getOrderAny(orderId, preferredClientId) {
-  const ids = [preferredClientId, ...listConnectedClientIds().filter(c => c !== preferredClientId)].filter(Boolean);
+  const connected = await listConnectedClientIds();
+  const ids = [preferredClientId, ...connected.filter(c => c !== preferredClientId)].filter(Boolean);
   if (ids.length === 0) throw new Error('No hay cuentas de Mercado Pago conectadas');
   let lastErr;
   for (const cid of ids) {
@@ -92,7 +96,8 @@ export async function getMerchantOrder(moId, clientId) {
 }
 
 export async function getMerchantOrderAny(moId, preferredClientId) {
-  const ids = [preferredClientId, ...listConnectedClientIds().filter(c => c !== preferredClientId)].filter(Boolean);
+  const connected = await listConnectedClientIds();
+  const ids = [preferredClientId, ...connected.filter(c => c !== preferredClientId)].filter(Boolean);
   if (ids.length === 0) throw new Error('No hay cuentas de Mercado Pago conectadas');
   let lastErr;
   for (const cid of ids) {
@@ -102,8 +107,8 @@ export async function getMerchantOrderAny(moId, preferredClientId) {
   throw lastErr;
 }
 
-function hdrs(idempotencyKey, clientId) {
-  const token = getStoredToken(clientId);
+async function hdrs(idempotencyKey, clientId) {
+  const token = await getStoredToken(clientId);
   if (!token) throw new Error('El cliente no tiene una cuenta de Mercado Pago conectada');
   return {
     Authorization: `Bearer ${token}`,
@@ -115,9 +120,10 @@ function hdrs(idempotencyKey, clientId) {
 }
 
 async function call(method, path, body, { idempotencyKey, clientId } = {}) {
+  const headers = await hdrs(idempotencyKey, clientId);
   const res = await fetch(BASE + path, {
     method,
-    headers: hdrs(idempotencyKey, clientId),
+    headers,
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   if (res.status === 204) return null;
@@ -359,7 +365,7 @@ export async function provisionMachinePos(machine) {
 
   // pos_id = external_id (lo que MP reporta como external_pos_id en el webhook);
   // mp_pos_id = id interno de MP. El webhook matchea por cualquiera de los dos.
-  db.prepare('UPDATE machines SET pos_id = ?, mp_pos_id = ?, mp_store_id = ?, mp_store_name = ? WHERE id = ?')
+  await db.prepare('UPDATE machines SET pos_id = ?, mp_pos_id = ?, mp_store_id = ?, mp_store_name = ? WHERE id = ?')
     .run(posExtId, String(pos.id), String(store.id), store.name || DEFAULT_STORE_NAME, machine.id);
 
   return {

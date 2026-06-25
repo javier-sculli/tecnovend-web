@@ -9,8 +9,8 @@ const router = Router();
 // El Arduino se identifica con su `arduino_id` (alfanumérico, grabado en el
 // firmware). Todos los endpoints reciben ese ID y resuelven a qué máquina
 // pertenece. Devuelve la fila completa de la máquina o null.
-function resolveMachine(arduinoId) {
-  return db.prepare('SELECT * FROM machines WHERE arduino_id = ?').get(arduinoId);
+async function resolveMachine(arduinoId) {
+  return await db.prepare('SELECT * FROM machines WHERE arduino_id = ?').get(arduinoId);
 }
 
 function verifyApiKey(machine, apiKey) {
@@ -20,14 +20,14 @@ function verifyApiKey(machine, apiKey) {
 }
 
 // Registra un evento de la máquina (heartbeat, config, service…)
-function logEvent(machineId, type, detail) {
-  db.prepare('INSERT INTO machine_events (machine_id, type, detail) VALUES (?,?,?)')
+async function logEvent(machineId, type, detail) {
+  await db.prepare('INSERT INTO machine_events (machine_id, type, detail) VALUES (?,?,?)')
     .run(machineId, type, detail != null ? JSON.stringify(detail) : null);
 }
 
 // Polling: Arduino consulta pulsos pendientes
-router.get('/poll/:arduinoId', (req, res) => {
-  const machine = resolveMachine(req.params.arduinoId);
+router.get('/poll/:arduinoId', async (req, res) => {
+  const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
   const apiKey = req.headers['x-api-key'];
@@ -58,7 +58,7 @@ router.get('/poll/:arduinoId', (req, res) => {
   reconcileMachineSoon(machine);
 
   // Marcar como entregados
-  const pending = db.prepare(`
+  const pending = await db.prepare(`
     SELECT id, channel, count FROM pulse_queue
     WHERE machine_id = ? AND status = 'pending'
     ORDER BY created_at ASC
@@ -66,7 +66,7 @@ router.get('/poll/:arduinoId', (req, res) => {
 
   if (pending.length > 0) {
     const ids = pending.map(p => p.id);
-    db.prepare(`UPDATE pulse_queue SET status = 'delivered' WHERE id IN (${ids.map(() => '?').join(',')})`)
+    await db.prepare(`UPDATE pulse_queue SET status = 'delivered' WHERE id IN (${ids.map(() => '?').join(',')})`)
       .run(...ids);
   }
 
@@ -77,9 +77,9 @@ router.get('/poll/:arduinoId', (req, res) => {
 });
 
 // ACK: Arduino confirma que ejecutó el pulso
-router.post('/ack/:arduinoId/:pulseId', (req, res) => {
+router.post('/ack/:arduinoId/:pulseId', async (req, res) => {
   const { pulseId } = req.params;
-  const machine = resolveMachine(req.params.arduinoId);
+  const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
   const apiKey = req.headers['x-api-key'];
@@ -93,7 +93,7 @@ router.post('/ack/:arduinoId/:pulseId', (req, res) => {
   }
 
   const machineId = machine.id;
-  const pulse = db.prepare(`SELECT id, status FROM pulse_queue WHERE id = ? AND machine_id = ?`).get(pulseId, machineId);
+  const pulse = await db.prepare(`SELECT id, status FROM pulse_queue WHERE id = ? AND machine_id = ?`).get(pulseId, machineId);
   if (!pulse) return res.status(404).json({ error: 'Pulso no encontrado' });
 
   // No reactivar pulsos ya expirados (no acreditaron) por un ACK tardío.
@@ -101,7 +101,7 @@ router.post('/ack/:arduinoId/:pulseId', (req, res) => {
     return res.status(409).json({ error: 'Pulso expirado (no acreditó)', code: 'expired' });
   }
 
-  db.prepare(`UPDATE pulse_queue SET status = 'acked', acked_at = datetime('now') WHERE id = ?`).run(pulseId);
+  await db.prepare(`UPDATE pulse_queue SET status = 'acked', acked_at = datetime('now') WHERE id = ?`).run(pulseId);
   res.json({ ok: true });
 });
 
@@ -111,7 +111,7 @@ router.post('/ack/:arduinoId/:pulseId', (req, res) => {
 // Idempotente: si el pago ya se reembolsó, responde ok sin volver a llamar a MP.
 router.post('/refund/:arduinoId/:pulseId', async (req, res) => {
   const { pulseId } = req.params;
-  const machine = resolveMachine(req.params.arduinoId);
+  const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
   const apiKey = req.headers['x-api-key'];
@@ -119,7 +119,7 @@ router.post('/refund/:arduinoId/:pulseId', async (req, res) => {
     return res.status(401).json({ error: 'No autorizado' });
   }
 
-  const pulse = db.prepare(`SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?`)
+  const pulse = await db.prepare(`SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?`)
     .get(pulseId, machine.id);
   if (!pulse) return res.status(404).json({ error: 'Pulso no encontrado' });
 
@@ -129,7 +129,7 @@ router.post('/refund/:arduinoId/:pulseId', async (req, res) => {
   }
 
   // El pulso no acreditó (se trabó) → lo sacamos de la cola.
-  db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulseId);
+  await db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulseId);
 
   if (!pulse.payment_id) {
     return res.json({ ok: true, pulse_id: pulseId, refunded: false, reason: 'pulso sin pago asociado' });
@@ -144,8 +144,8 @@ router.post('/refund/:arduinoId/:pulseId', async (req, res) => {
 // Config de la máquina. Todo vive a nivel máquina:
 //   - Red WiFi: credenciales propias del equipo.
 //   - Parámetros de pulso (valor, duración, gap).
-router.get('/config/:arduinoId', (req, res) => {
-  const machine = resolveMachine(req.params.arduinoId);
+router.get('/config/:arduinoId', async (req, res) => {
+  const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
   const apiKey = req.headers['x-api-key'];
@@ -154,7 +154,7 @@ router.get('/config/:arduinoId', (req, res) => {
   }
 
   const machineId = machine.id;
-  const row = db.prepare(`
+  const row = await db.prepare(`
     SELECT
       pulse_value, pulse_duration_ms, pulse_gap_ms,
       wifi_ssid, wifi_user, wifi_password
@@ -164,7 +164,7 @@ router.get('/config/:arduinoId', (req, res) => {
 
   if (!row) return res.status(404).json({ error: 'Máquina no encontrada' });
 
-  logEvent(machineId, 'config', { pulse_value: row.pulse_value ?? null });
+  await logEvent(machineId, 'config', { pulse_value: row.pulse_value ?? null });
 
   res.json({
     machine_id: machineId,
@@ -186,8 +186,8 @@ router.get('/config/:arduinoId', (req, res) => {
 // reporta si está en servicio. Es el único input del estado de la máquina.
 // body: { rssi?, uptime?, fw?, in_service?: boolean }
 //   in_service true → active, false → maintenance. Si se omite, no toca status.
-router.post('/heartbeat/:arduinoId', (req, res) => {
-  const machine = resolveMachine(req.params.arduinoId);
+router.post('/heartbeat/:arduinoId', async (req, res) => {
+  const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
   const apiKey = req.headers['x-api-key'];
@@ -200,7 +200,7 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
   const hasService = typeof in_service === 'boolean';
   const status = hasService ? (in_service ? 'active' : 'maintenance') : null;
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE machines SET
       last_seen_at     = datetime('now'),
       last_rssi        = COALESCE(?, last_rssi),
@@ -216,7 +216,7 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
     machineId,
   );
 
-  logEvent(machineId, 'heartbeat', {
+  await logEvent(machineId, 'heartbeat', {
     rssi: Number.isInteger(rssi) ? rssi : null,
     uptime: Number.isInteger(uptime) ? uptime : null,
     fw: typeof fw === 'string' ? fw : null,
@@ -226,10 +226,10 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
 
   // Si se reporta un pulso afectado que falló (ej: por timeout de venta), disparamos la devolución
   if (affected_pulse_id) {
-    const pulse = db.prepare(`SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?`)
+    const pulse = await db.prepare(`SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?`)
       .get(affected_pulse_id, machineId);
     if (pulse) {
-      db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulse.id);
+      await db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulse.id);
       if (pulse.payment_id) {
         refundPaymentById(pulse.payment_id)
           .then(r => console.log(`[heartbeat-refund] Reembolso solicitado vía affected_pulse_id ${affected_pulse_id}:`, r.ok))
@@ -240,7 +240,7 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
 
   // Si el heartbeat trae el reporte de servicio, lo dejamos en el timeline.
   if (hasService) {
-    logEvent(machineId, 'service', { in_service });
+    await logEvent(machineId, 'service', { in_service });
   }
 
   // El firmware decide si poolear según `status`: si no es 'active', no debería
