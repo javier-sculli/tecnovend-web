@@ -390,7 +390,14 @@ export const openapiSpec = {
         requestBody: {
           content: json({
             type: 'object',
-            properties: { rssi: { type: 'integer', example: -62, description: 'dBm de señal WiFi' }, uptime: { type: 'integer', description: 'segundos encendido' }, fw: { type: 'string', description: 'versión de firmware' }, in_service: { type: 'boolean', description: 'opcional: true = active, false = maintenance. Si se omite, no cambia el status' } },
+            properties: {
+              rssi: { type: 'integer', example: -62, description: 'dBm de señal WiFi' },
+              uptime: { type: 'integer', description: 'segundos encendido' },
+              fw: { type: 'string', description: 'versión de firmware' },
+              in_service: { type: 'boolean', description: 'opcional: true = active, false = maintenance. Si se omite, no cambia el status' },
+              reason: { type: 'string', description: 'opcional: motivo por el cual la máquina reporta fuera de servicio o error (ej: sale_timeout)' },
+              affected_pulse_id: { type: 'string', description: 'opcional: ID del pulso afectado que causó la falla para disparar reembolso automático' },
+            },
           }),
         },
         responses: { 200: ok('OK', { type: 'object', properties: { ok: { type: 'boolean' }, machine_id: { type: 'string' }, status: { type: 'string', description: 'estado actual de la máquina; el firmware solo debería poolear cuando es active' } } }), 401: ok('API key inválida', Error), 404: ok('Arduino no registrado', Error) },

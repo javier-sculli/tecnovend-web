@@ -196,7 +196,7 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
   }
 
   const machineId = machine.id;
-  const { rssi, uptime, fw, in_service } = req.body || {};
+  const { rssi, uptime, fw, in_service, reason, affected_pulse_id } = req.body || {};
   const hasService = typeof in_service === 'boolean';
   const status = hasService ? (in_service ? 'active' : 'maintenance') : null;
 
@@ -220,7 +220,23 @@ router.post('/heartbeat/:arduinoId', (req, res) => {
     rssi: Number.isInteger(rssi) ? rssi : null,
     uptime: Number.isInteger(uptime) ? uptime : null,
     fw: typeof fw === 'string' ? fw : null,
+    reason: typeof reason === 'string' ? reason : null,
+    affected_pulse_id: typeof affected_pulse_id === 'string' ? affected_pulse_id : null,
   });
+
+  // Si se reporta un pulso afectado que falló (ej: por timeout de venta), disparamos la devolución
+  if (affected_pulse_id) {
+    const pulse = db.prepare(`SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?`)
+      .get(affected_pulse_id, machineId);
+    if (pulse && pulse.status !== 'acked') {
+      db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulse.id);
+      if (pulse.payment_id) {
+        refundPaymentById(pulse.payment_id)
+          .then(r => console.log(`[heartbeat-refund] Reembolso solicitado vía affected_pulse_id ${affected_pulse_id}:`, r.ok))
+          .catch(e => console.error(`[heartbeat-refund] Error al reembolsar vía affected_pulse_id ${affected_pulse_id}:`, e.message));
+      }
+    }
+  }
 
   // Si el heartbeat trae el reporte de servicio, lo dejamos en el timeline.
   if (hasService) {
