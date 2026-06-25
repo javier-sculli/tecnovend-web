@@ -981,15 +981,27 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
       </div>
 
       <div className="detail-strip">
-        <div className="item">
-          <span className="label">Última señal</span>
-          <span className="value">{timeAgo(m.last_seen_at)}</span>
-          <span className="delta-row">
-            <span className={"delta " + (conn.dot === "ok" ? "up" : conn.dot === "warn" ? "up flat" : "down")}>
-              <span className={"sdot " + conn.dot} style={{ marginRight: 5 }}></span>{conn.txt}
+        {m.state !== "offline" ? (
+          <div className="item">
+            <span className="label">Conexión</span>
+            <span className="value">{m.state === "online" ? "Online" : "Fuera de servicio"}</span>
+            <span className="delta-row">
+              <span className={"delta " + (conn.dot === "ok" ? "up" : "up flat")}>
+                <span className={"sdot " + conn.dot} style={{ marginRight: 5 }}></span>{conn.txt}
+              </span>
             </span>
-          </span>
-        </div>
+          </div>
+        ) : (
+          <div className="item">
+            <span className="label">Última señal</span>
+            <span className="value">{timeAgo(m.last_seen_at)}</span>
+            <span className="delta-row">
+              <span className="delta down">
+                <span className={"sdot " + conn.dot} style={{ marginRight: 5 }}></span>{conn.txt}
+              </span>
+            </span>
+          </div>
+        )}
         <div className="item">
           <span className="label">Señal WiFi</span>
           <span className="value">{m.last_rssi != null ? `${m.last_rssi} dBm` : "—"}</span>
