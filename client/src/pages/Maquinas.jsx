@@ -225,8 +225,9 @@ function MachineList({ machines, onOpen, onNew, clientsById = {} }) {
 // Estado de reembolso → badge. 'done' (o refunded_at) = ya devuelto.
 const refundView = (p) => {
   if (p.refunded_at || p.refund_status === 'done') return { state: 'done', cls: 'off', txt: '↩ Reembolsado' };
-  if (p.refund_status === 'pending') return { state: 'pending', cls: 'warn', txt: '↩ Reembolsando…' };
-  if (p.refund_status === 'failed') return { state: 'failed', cls: 'bad', txt: '↩ Reembolso falló' };
+  if (p.refund_status === 'partial') return { state: 'partial', cls: 'warn', txt: `↩ Excedente devuelto (${ars(p.refunded_amount || 0)})` };
+  if (p.refund_status === 'pending' || p.refund_status === 'excess_pending') return { state: 'pending', cls: 'warn', txt: '↩ Reembolsando…' };
+  if (p.refund_status === 'failed' || p.refund_status === 'excess_failed') return { state: 'failed', cls: 'bad', txt: '↩ Reembolso falló' };
   return { state: 'none' };
 };
 
