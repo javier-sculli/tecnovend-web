@@ -33,30 +33,39 @@ export async function findMachine(posId) {
 // `refundPending` marca el pago para reembolso (caso fuera de servicio).
 // Devuelve el paymentId creado, o null si era duplicado.
 export async function enqueuePayment(machineId, mpId, amount, pulses, { idKind, refundPending = false } = {}) {
-  const existing = await db.prepare('SELECT id FROM payments WHERE mp_payment_id = ?').get(mpId);
-  if (existing) return null; // deduplicación
+  // Pago y pulso se insertan en UNA transacción: o entran los dos o ninguno. Si el
+  // INSERT del pulso falla, el del pago también se revierte (ROLLBACK) y el próximo
+  // intento (webhook/reconciliación) lo reprocesa limpio. Antes eran dos INSERT
+  // sueltos: si el segundo fallaba, el pago quedaba con pulses_calculated>0 pero sin
+  // fila en pulse_queue → ni dispensaba ni se reembolsaba (limbo permanente, porque
+  // la dedup por mp_payment_id impedía reintentar). Red de seguridad para filas
+  // viejas rotas: findPaymentsMissingPulses (services/pulses.js).
+  return await db.transaction(async (tx) => {
+    const existing = await tx.prepare('SELECT id FROM payments WHERE mp_payment_id = ?').get(mpId);
+    if (existing) return null; // deduplicación
 
-  const paymentId = genPaymentId();
+    const paymentId = genPaymentId();
 
-  // Siempre registramos el pago en la BD (aunque pulses=0 por monto insuficiente)
-  const status = 'approved'; // MP aprobó el pago — independiente de pulsos
-  await db.prepare(`
-    INSERT INTO payments (id, machine_id, mp_payment_id, amount, method, status, pulses_calculated, mp_id_kind, refund_status)
-    VALUES (?, ?, ?, ?, 'qr', ?, ?, ?, ?)
-  `).run(paymentId, machineId, mpId, amount, status, pulses, idKind ?? null, refundPending ? 'pending' : null);
+    // Siempre registramos el pago en la BD (aunque pulses=0 por monto insuficiente)
+    const status = 'approved'; // MP aprobó el pago — independiente de pulsos
+    await tx.prepare(`
+      INSERT INTO payments (id, machine_id, mp_payment_id, amount, method, status, pulses_calculated, mp_id_kind, refund_status)
+      VALUES (?, ?, ?, ?, 'qr', ?, ?, ?, ?)
+    `).run(paymentId, machineId, mpId, amount, status, pulses, idKind ?? null, refundPending ? 'pending' : null);
 
-  if (pulses >= 1) {
-    // Ventana de ACK: 3 minutos. Si el Arduino no confirma en ese tiempo, el
-    // pulso se expira (se saca de la cola, no acreditó) y se reembolsa el pago.
-    // OJO: expires_at se calcula con datetime() de SQLite (formato 'YYYY-MM-DD
-    // HH:MM:SS') para que coincida con datetime('now') del barrido. Un ISO de JS
-    // (con 'T' y 'Z') compara como string SIEMPRE mayor → el pulso nunca expira.
-    await db.prepare(`
-      INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
-      VALUES (?, ?, ?, 1, ?, datetime('now', '+3 minutes'))
-    `).run(genPulseId(), machineId, paymentId, pulses);
-  }
+    if (pulses >= 1) {
+      // Ventana de ACK: 3 minutos. Si el Arduino no confirma en ese tiempo, el
+      // pulso se expira (se saca de la cola, no acreditó) y se reembolsa el pago.
+      // OJO: expires_at se calcula con datetime() de SQLite (formato 'YYYY-MM-DD
+      // HH:MM:SS') para que coincida con datetime('now') del barrido. Un ISO de JS
+      // (con 'T' y 'Z') compara como string SIEMPRE mayor → el pulso nunca expira.
+      await tx.prepare(`
+        INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
+        VALUES (?, ?, ?, 1, ?, datetime('now', '+3 minutes'))
+      `).run(genPulseId(), machineId, paymentId, pulses);
+    }
 
-  return paymentId;
+    return paymentId;
+  });
 }
 

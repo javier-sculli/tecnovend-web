@@ -22,3 +22,22 @@ export async function expireStalePulses() {
   return stale;
 }
 
+// Red de seguridad: pagos que calcularon pulsos (pulses_calculated >= 1) pero NO
+// tienen NINGUNA fila en pulse_queue. Con enqueuePayment ahora atómico no debería
+// pasar, pero cubre filas viejas rotas de antes del fix. Es un limbo invisible: sin
+// pulso no dispensa, y el barrido de expiración solo mira filas existentes → nunca
+// se reembolsa solo. Acá los detectamos para marcarlos a reembolso (regla única: si
+// no se dispensa nada, no se retiene la plata). Grace de 2 min para no pisar un pago
+// recién insertado. Excluye los ya reembolsados/en proceso. Devuelve los payment_id.
+export async function findPaymentsMissingPulses() {
+  const rows = await db.prepare(`
+    SELECT p.id FROM payments p
+    WHERE p.pulses_calculated >= 1
+      AND p.refund_status IS NULL
+      AND p.refunded_at IS NULL
+      AND p.created_at < datetime('now', '-2 minutes')
+      AND NOT EXISTS (SELECT 1 FROM pulse_queue q WHERE q.payment_id = p.id)
+  `).all();
+  return rows.map(r => r.id);
+}
+

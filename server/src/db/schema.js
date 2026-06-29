@@ -238,6 +238,36 @@ const db = {
         return { changes: res.rowCount };
       }
     };
+  },
+  // Ejecuta fn dentro de una transacción sobre un único client del pool. fn recibe
+  // un objeto con .prepare() idéntico al de db pero atado a esa conexión, así varios
+  // INSERT/UPDATE se confirman juntos (COMMIT) o se revierten todos (ROLLBACK ante
+  // cualquier excepción). Necesario para que registrar el pago y encolar su pulso
+  // sean atómicos: sin esto, si el INSERT del pulso falla, el pago quedaba huérfano
+  // (pulses_calculated>0 sin fila en pulse_queue → ni dispensa ni se reembolsa).
+  async transaction(fn) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const tx = {
+        prepare(sql) {
+          const pgSql = translateSql(sql);
+          return {
+            async get(...params) { return (await client.query(pgSql, params)).rows[0] || null; },
+            async all(...params) { return (await client.query(pgSql, params)).rows; },
+            async run(...params) { return { changes: (await client.query(pgSql, params)).rowCount }; },
+          };
+        },
+      };
+      const result = await fn(tx);
+      await client.query('COMMIT');
+      return result;
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 };
 

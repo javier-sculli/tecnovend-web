@@ -15,7 +15,7 @@ import docsRouter from './routes/docs.js';
 
 // Inicializar BD (crea tablas y ejecuta migraciones)
 import { initDb } from './db/schema.js';
-import { expireStalePulses } from './services/pulses.js';
+import { expireStalePulses, findPaymentsMissingPulses } from './services/pulses.js';
 import { flagPaymentsForRefund, processPendingRefunds } from './services/refunds.js';
 import { reconcileAll } from './services/reconcile.js';
 
@@ -71,6 +71,12 @@ setInterval(async () => {
     if (expired.length > 0) {
       console.log(`[pulses] ${expired.length} pulso(s) expirado(s) sin ACK`);
       await flagPaymentsForRefund(expired.map(p => p.payment_id));
+    }
+    // Pagos con pulsos calculados pero sin fila en la cola (limbo): marcar a reembolso.
+    const missing = await findPaymentsMissingPulses();
+    if (missing.length > 0) {
+      console.warn(`[pulses] ${missing.length} pago(s) con pulsos calculados pero sin cola → reembolso`);
+      await flagPaymentsForRefund(missing);
     }
     await processPendingRefunds();
   } catch (e) {
