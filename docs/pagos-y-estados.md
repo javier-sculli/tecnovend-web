@@ -19,17 +19,27 @@ Hay **dos** conceptos distintos:
 
 > Operativamente, **"fuera de servicio" = `status !== 'active'`** (cubre `maintenance` e `inactive`).
 
-### `state` — lo que se deriva y se muestra (`machineState()` en `machines.js`)
-Combina el `status` con la última señal de vida (`last_seen_at`):
+### `state` — lo que se deriva y se muestra (`machineState()` en `services/machine-state.js`)
+Combina el `status` con la última señal de vida (`last_seen_at`). El umbral offline
+es único: `OFFLINE_AFTER_MS` en `services/machine-state.js` (hoy 60 min). Si se
+cambia, cambia en toda la app (estado de la web y avisos por mail).
 
 | `state` | Regla | Color |
 |---|---|---|
-| `offline` | Sin heartbeat hace **≥ 60 min** (o nunca) | rojo |
-| `out_of_service` | Latió hace <60 min pero `status !== 'active'` | amarillo |
-| `online` | Latió hace <60 min y `status === 'active'` | verde |
+| `offline` | Sin heartbeat hace **≥ `OFFLINE_AFTER_MS`** (o nunca) | rojo |
+| `out_of_service` | Latió hace menos del umbral pero `status !== 'active'` | amarillo |
+| `online` | Latió hace menos del umbral y `status === 'active'` | verde |
 
 **La conexión manda:** sin heartbeat reciente la máquina es `offline` aunque su
 `status` sea `active`. El heartbeat es el único input del estado de conexión.
+
+**Aviso por mail al quedar offline:** cuando una máquina cruza a `offline` (perdida),
+un barrido de fondo (`services/offline-alerts.js`) manda **un** mail a la cuenta dueña
+(usuarios miembros + `contact_email`), **una sola vez por corte**. El flag
+`machines.offline_notified_at` se limpia al reconectar, así un nuevo corte vuelve a
+avisar. **No** se avisa por `out_of_service` (baja operativa vía heartbeat): ahí la
+máquina sigue conectada. Solo se avisa por máquinas que alguna vez latieron (una
+máquina recién dada de alta que nunca conectó no dispara mail).
 
 ---
 

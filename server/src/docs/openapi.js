@@ -1,4 +1,4 @@
-// Especificación OpenAPI 3.0 de la API de Tecnovend.
+// Especificación OpenAPI 3.0 de la API de VendPoint.
 // Hecha a mano (sin dependencias) para documentar todos los endpoints.
 // Se sirve como JSON en /api/openapi.json y con Swagger UI en /api/docs.
 
@@ -135,17 +135,17 @@ const idParam = (desc) => ({ name: 'id', in: 'path', required: true, schema: { t
 export const openapiSpec = {
   openapi: '3.0.3',
   info: {
-    title: 'Tecnovend API',
+    title: 'VendPoint API',
     version: '1.0.0',
     description:
-      'API del sistema de pagos para máquinas expendedoras de Tecnovend.\n\n' +
+      'API del sistema de pagos para máquinas expendedoras de VendPoint.\n\n' +
       'Integra Mercado Pago (QR Fase 1, Point Fase 2) con firmware ESP32. ' +
       'El flujo es: MP notifica un pago por webhook → el servidor lo registra y encola pulsos → ' +
       'el Arduino hace polling y los ejecuta.\n\n' +
       '**Principio:** todo pago aprobado por MP se registra siempre; el monto solo define cuántos pulsos se encolan.',
   },
   servers: [
-    { url: 'https://tecnovend-api-production.up.railway.app', description: 'Producción (Railway)' },
+    { url: 'https://www.vendpoint.com.ar', description: 'Producción' },
     { url: 'http://localhost:3000', description: 'Local' },
   ],
   tags: [

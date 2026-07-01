@@ -1,6 +1,6 @@
-# API del Arduino — Tecnovend
+# API del Arduino — VendPoint
 
-**Base URL:** `https://<tu-dominio-railway>.up.railway.app`
+**Base URL:** `https://www.vendpoint.com.ar`
 
 ---
 

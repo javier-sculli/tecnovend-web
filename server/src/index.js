@@ -18,6 +18,7 @@ import { initDb } from './db/schema.js';
 import { expireStalePulses, findPaymentsMissingPulses } from './services/pulses.js';
 import { flagPaymentsForRefund, processPendingRefunds } from './services/refunds.js';
 import { reconcileAll } from './services/reconcile.js';
+import { sweepOfflineAlerts } from './services/offline-alerts.js';
 
 await initDb();
 
@@ -53,7 +54,7 @@ app.get('*', (req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Tecnovend API corriendo en http://localhost:${PORT}`);
+  console.log(`VendPoint API corriendo en http://localhost:${PORT}`);
   if (!process.env.MP_ACCESS_TOKEN) {
     console.warn('⚠  MP_ACCESS_TOKEN no configurado — copiá .env.example a .env y completalo');
   }
@@ -102,3 +103,19 @@ setInterval(async () => {
     _reconciling = false;
   }
 }, 120_000);
+
+// Avisos de máquina offline: detecta la transición a "perdida" (sin heartbeat
+// hace más de 1h) y manda un mail a la cuenta, una sola vez por corte. Ver
+// services/offline-alerts.js.
+let _alertingOffline = false;
+setInterval(async () => {
+  if (_alertingOffline) return;
+  _alertingOffline = true;
+  try {
+    await sweepOfflineAlerts();
+  } catch (e) {
+    console.error('[offline-alert]', e.message);
+  } finally {
+    _alertingOffline = false;
+  }
+}, 60_000);

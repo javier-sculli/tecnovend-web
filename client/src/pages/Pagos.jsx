@@ -32,7 +32,7 @@ function EmptyState({ onConnect, connecting }) {
       <div className="left">
         <span className="eyebrow"><span className="dot"></span>Integración · Mercado Pago</span>
         <h2>Conecta Mercado Pago <span className="it">para empezar a cobrar</span></h2>
-        <p>Autorizá a Tecnovend a procesar pagos en nombre de tu cuenta. Te llevamos a Mercado Pago, te autenticás una sola vez y volvés acá con tus locales y cajas sincronizados.</p>
+        <p>Autorizá a VendPoint a procesar pagos en nombre de tu cuenta. Te llevamos a Mercado Pago, te autenticás una sola vez y volvés acá con tus locales y cajas sincronizados.</p>
 
         <div className="perks">
           <div className="perk">{Icon.check}<span><b>Pagos QR</b> usando tus credenciales reales, sin intermediarios.</span></div>
@@ -83,7 +83,7 @@ function EmptyState({ onConnect, connecting }) {
             {Icon.machine}
           </div>
           <div>
-            <div className="name">Tecnovend</div>
+            <div className="name">VendPoint</div>
             <div className="sub">vending_os</div>
           </div>
         </div>

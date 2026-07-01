@@ -120,6 +120,10 @@ export async function initDb() {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_machines_arduino_id ON machines(arduino_id) WHERE arduino_id IS NOT NULL;`);
+  // Marca de que ya avisamos por mail que la máquina quedó offline (perdida).
+  // Se setea al mandar el aviso y se limpia (NULL) cuando la máquina vuelve a
+  // latir, para que un nuevo corte vuelva a avisar. Ver services/offline-alerts.js.
+  await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS offline_notified_at TIMESTAMP;`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS payments (

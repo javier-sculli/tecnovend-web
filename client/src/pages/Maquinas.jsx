@@ -1372,7 +1372,7 @@ function NewMachineModal({ onClose, onAdd }) {
                   <div className="mn-t">Caja automática</div>
                   <div className="mn-s">
                     Al crear la máquina se genera una caja QR propia dentro del local
-                    de Tecnovend y se asocia sola. No hay que elegir nada — el QR queda
+                    de VendPoint y se asocia sola. No hay que elegir nada — el QR queda
                     listo en la solapa <strong>Pagos</strong> de la máquina.
                   </div>
                 </div>

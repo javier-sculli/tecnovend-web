@@ -25,7 +25,7 @@ export default function Sidebar() {
       <Link to="/" className="brand-row" style={{ textDecoration: "none", color: "inherit" }}>
         <div className="brand-mark" aria-hidden></div>
         <div>
-          <div className="brand-name">Tecnovend</div>
+          <div className="brand-name">VendPoint</div>
           <div className="brand-tag">Vending OS · v1.0</div>
         </div>
       </Link>
@@ -82,7 +82,7 @@ export default function Sidebar() {
         <div className="avatar">JS</div>
         <div className="user-meta">
           <div className="user-name">Javier Sculli</div>
-          <div className="user-org">Tecnovend · Admin</div>
+          <div className="user-org">VendPoint · Admin</div>
         </div>
       </div>
     </aside>

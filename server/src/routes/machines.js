@@ -3,25 +3,9 @@ import db from '../db/schema.js';
 import { armFixedQR } from '../services/qr.js';
 import { refundPaymentById } from '../services/refunds.js';
 import { provisionMachinePos } from '../services/mp.js';
+import { machineState } from '../services/machine-state.js';
 
 const router = Router();
-
-// Estado consolidado de la máquina, en un solo campo `state`:
-//   online          → latió en la última hora y está en servicio  (verde)
-//   out_of_service  → latió, pero avisó que está fuera de servicio (amarillo)
-//   offline         → no latió en la última hora / nunca latió      (rojo)
-//
-// La conexión manda: sin heartbeat reciente no podemos saber nada de la
-// máquina, así que es `offline` aunque su último status fuera 'active'.
-function machineState(machine) {
-  const ts = machine.last_seen_at;
-  const ageMs = ts
-    ? Date.now() - new Date(ts.replace(' ', 'T') + 'Z').getTime()
-    : Infinity;
-  if (ageMs >= 60 * 60_000) return 'offline';
-  if (machine.status !== 'active') return 'out_of_service';
-  return 'online';
-}
 
 router.get('/', async (req, res) => {
   // Scoping opcional por organización (header x-org-id). La validación de

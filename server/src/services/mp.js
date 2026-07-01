@@ -297,7 +297,7 @@ export async function listPOS(storeId, clientId) {
 // tiene su propia caja (external_id = machine.id). Así nunca se comparten cajas
 // entre máquinas y MP queda ordenado solo, sin elegir local/caja a mano.
 const DEFAULT_STORE_EXT_ID = 'tv_default';
-const DEFAULT_STORE_NAME = 'Tecnovend';
+const DEFAULT_STORE_NAME = 'VendPoint';
 
 // Devuelve el local default de la cuenta del cliente, creándolo si no existe.
 // El local siempre vive en la cuenta de MP del cliente (clientId).

@@ -1,4 +1,4 @@
-# Tecnovend — Contexto del Proyecto
+# VendPoint — Contexto del Proyecto
 
 ## Qué es esto
 Sistema propio de pagos para máquinas expendedoras. Reemplaza 5 proveedores externos por integración directa con **Mercado Pago** usando credenciales propias. El hardware embebido es un **Arduino (ESP32)** que se comunica con un servidor web propio.
@@ -71,8 +71,8 @@ pulsos = floor(monto_pagado / pulse_value)
 ## API del Servidor
 
 **URLs de producción (Railway):**
-- API + Web de gestión (servicio unificado, un solo deploy): `https://tecnovend-api-production.up.railway.app/`
-- El Express de la API sirve también el build de React (`server/public`, generado con `npm run build:web`). El servicio `tecnovend-web` quedó obsoleto. Pendiente: custom domain.
+- API + Web de gestión (servicio unificado, un solo deploy): `https://www.vendpoint.com.ar/` (custom domain; la URL de Railway `tecnovend-api-production.up.railway.app` sigue funcionando también).
+- El Express de la API sirve también el build de React (`server/public`, generado con `npm run build:web`). El servicio `tecnovend-web` quedó obsoleto.
 
 ### Webhooks
 ```
@@ -163,7 +163,7 @@ expires_at  TIMESTAMP             -- pulso fantasma prevention
 
 - El token de MP vive **por cliente** en la tabla `mp_connections` (`client_id`, `access_token`, `refresh_token`, `expires_at`, `mp_user_id`). No existe más el token global en `config`.
 - **OAuth atado al cliente:** `GET /api/mp/auth?org=<clientId>` conecta la cuenta de ese cliente; el callback guarda la conexión (con su `mp_user_id`) y borra cualquier token global legacy.
-- **Provisión automática:** al crear una máquina, el servidor crea/reutiliza un local default `tv_default` ("Tecnovend") **dentro de la cuenta del cliente** (`machine.client_id`) y le crea una caja QR propia. El `external_id` de la caja debe ser **alfanumérico** (MP rechaza guiones bajos): `machine_230` → `machine230`, y ese valor se guarda en `pos_id` (es lo que MP reporta como `external_pos_id` en el webhook).
+- **Provisión automática:** al crear una máquina, el servidor crea/reutiliza un local default `tv_default` ("VendPoint") **dentro de la cuenta del cliente** (`machine.client_id`) y le crea una caja QR propia. El `external_id` de la caja debe ser **alfanumérico** (MP rechaza guiones bajos): `machine_230` → `machine230`, y ese valor se guarda en `pos_id` (es lo que MP reporta como `external_pos_id` en el webhook).
 - **Una caja por máquina, siempre.** Nunca compartir una caja entre máquinas (sino los pagos se acreditan a una sola).
 - **Ruteo del webhook:** el aviso de MP trae el `user_id` de la cuenta colectora → `clientByMpUser(user_id)` resuelve el cliente → se consulta el pago con **su** token. Sin match no hay fallback: el aviso se ignora con error logueado.
 - **Gate de alta (web):** "Nueva máquina" abre un pop-up para conectar MP si el cliente activo no tiene cuenta conectada.
@@ -224,7 +224,7 @@ Proceso único por máquina: asociar `terminal_id` (impreso en el Point) o `pos_
 | Fase 3 | Pendiente | Multi-máquina, multi-cliente, SaaS |
 
 **Prerequisitos bloqueantes (de Pablo):**
-- [ ] Access Token MP de la cuenta de Tecnovend
+- [ ] Access Token MP de la cuenta de VendPoint
 - [ ] `pos_id` o `store_id` del QR actual
 - [ ] Acceso a la plataforma del proveedor actual
 - [ ] `device_id` del Point para pruebas
@@ -261,7 +261,21 @@ NODE_ENV=development
 
 # Seguridad
 JWT_SECRET=...
+
+# Mail (Resend) — avisos por mail, ej: máquina offline/perdida.
+# Si falta la config, no se envía nada (se loguea) y el server arranca igual.
+RESEND_API_KEY=...
+MAIL_FROM=VendPoint <avisos@tudominio.com>
 ```
+
+### Avisos por mail — máquina offline
+Cuando una máquina queda **perdida** (sin heartbeat hace más del umbral offline,
+mismo que pinta la web en rojo — `OFFLINE_AFTER_MS` en `services/machine-state.js`),
+un barrido de fondo (`services/offline-alerts.js`) manda **un mail** a la cuenta
+dueña (usuarios miembros + `contact_email`), **una sola vez por corte**. El flag
+`machines.offline_notified_at` se limpia al reconectar, así un nuevo corte vuelve
+a avisar. **No** se avisa por la baja operativa vía heartbeat (`out_of_service`):
+esa la máquina sigue conectada.
 
 ---
 

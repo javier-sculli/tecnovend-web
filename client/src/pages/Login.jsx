@@ -31,7 +31,7 @@ export default function Login() {
       <form className="card" onSubmit={submit} style={{ width: 380, maxWidth: '90vw', padding: 4 }}>
         <div className="card-head" style={{ borderBottom: 'none' }}>
           <div>
-            <div className="card-title" style={{ fontSize: 18 }}>Tecnovend</div>
+            <div className="card-title" style={{ fontSize: 18 }}>VendPoint</div>
             <div className="card-sub">Iniciá sesión para gestionar tus máquinas</div>
           </div>
         </div>

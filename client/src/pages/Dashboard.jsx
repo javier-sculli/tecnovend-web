@@ -532,7 +532,7 @@ export default function Dashboard() {
           </div>
 
           <div style={{ textAlign: "center", padding: "8px 0 0", color: "var(--ink-4)", fontSize: 11.5, letterSpacing: "0.04em" }}>
-            Tecnovend · Vending OS · v1.0 — Dashboard preview · entorno {envProd ? "producción" : "sandbox"}
+            VendPoint · Vending OS · v1.0 — Dashboard preview · entorno {envProd ? "producción" : "sandbox"}
           </div>
         </div>
       </div>
