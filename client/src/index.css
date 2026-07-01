@@ -1768,6 +1768,17 @@ body {
    (ej. el @media (max-width:1100px) de .mp-account más arriba).
    ============================================================ */
 @media (max-width: 860px) {
+  /* Red de seguridad: pase lo que pase con el ancho de algún hijo (grids con
+     min-width, un token largo sin wrap, etc.), la PÁGINA nunca scrollea
+     horizontal — el scroll horizontal queda contenido en los componentes que
+     lo declaran a propósito (.mlist, .locale-list, .dev-list, .card:has(.tx)).
+     También cubre un quirk conocido de Safari donde un position:fixed con
+     transform puede seguir sumando al ancho scrolleable del documento aunque
+     esté fuera de pantalla — por eso además el drawer usa `left` y no
+     `transform` para esconderse (ver .sidebar más abajo). */
+  html, body { overflow-x: hidden; max-width: 100vw; }
+  .app { max-width: 100vw; overflow-x: hidden; }
+
   /* ----- Shell: sidebar drawer ----- */
   .app { grid-template-columns: 1fr; }
 
@@ -1788,15 +1799,14 @@ body {
     z-index: 54;
   }
   .sidebar {
-    position: fixed; top: 0; left: 0;
+    position: fixed; top: 0; left: -260px;
     height: 100vh; width: 250px;
     z-index: 55;
-    transform: translateX(-100%);
-    transition: transform .22s ease-out;
+    transition: left .22s ease-out;
     box-shadow: none;
   }
   .sidebar.open {
-    transform: translateX(0);
+    left: 0;
     box-shadow: 12px 0 32px rgba(0,0,0,.14);
   }
 
