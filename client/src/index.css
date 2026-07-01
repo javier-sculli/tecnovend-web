@@ -62,6 +62,10 @@ body {
 }
 
 /* ----- Sidebar ----- */
+/* Ocultos por default (desktop): son piezas del drawer mobile. Sin este
+   display:none, al ser hijos-fragmento de Sidebar dentro de .app (grid),
+   el grid los auto-coloca como celdas y rompe el layout de escritorio. */
+.sidebar-toggle, .sidebar-backdrop { display: none; }
 .sidebar {
   border-right: 1px solid var(--line);
   background: var(--panel);
@@ -1751,4 +1755,107 @@ body {
 .mp-notice > svg { color: var(--warn); width: 14px; height: 14px; flex-shrink: 0; margin-top: 2px; }
 .mp-notice .mn-t { color: var(--ink-1); font-weight: 500; }
 .mp-notice .mn-s { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+
+/* ============================================================
+   MOBILE (<=860px) — flujo principal usable: Máquinas (lista +
+   detalle) y Pagos. La sidebar pasa a ser un drawer (botón
+   hamburguesa + overlay, ver Sidebar.jsx); el contenido pasa a
+   una sola columna; las tablas densas (mlist-row, tx, locale,
+   dev-row) se vuelven scrolleables horizontalmente en vez de
+   aplastarse ilegibles.
+   Puesto al final del archivo a propósito: así gana por orden de
+   cascada sobre cualquier regla anterior con la misma especificidad
+   (ej. el @media (max-width:1100px) de .mp-account más arriba).
+   ============================================================ */
+@media (max-width: 860px) {
+  /* ----- Shell: sidebar drawer ----- */
+  .app { grid-template-columns: 1fr; }
+
+  .sidebar-toggle {
+    display: grid; place-items: center;
+    position: fixed; top: 12px; left: 12px; z-index: 60;
+    width: 36px; height: 36px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--ink-2);
+    box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed; inset: 0;
+    background: rgba(24,24,27,.4);
+    z-index: 54;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0;
+    height: 100vh; width: 250px;
+    z-index: 55;
+    transform: translateX(-100%);
+    transition: transform .22s ease-out;
+    box-shadow: none;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: 12px 0 32px rgba(0,0,0,.14);
+  }
+
+  /* ----- Topbar ----- */
+  .topbar {
+    padding: 12px 14px 12px 58px; /* espacio para el botón hamburguesa */
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .topbar .crumbs { font-size: 12px; }
+  .topbar .env-switch { display: none; }
+  .topbar .search { display: none; }
+  .topbar .top-actions { margin-left: auto; }
+  .org-switch .value { display: none; } /* el ícono solo alcanza en mobile */
+
+  /* ----- Page / header ----- */
+  .page { padding: 16px 14px 32px; gap: 14px; }
+  .page-head { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .page-title { font-size: 22px; }
+  .head-controls { width: 100%; flex-wrap: wrap; }
+  .head-controls .btn { flex: 1; justify-content: center; }
+
+  .toolbar-search { min-width: 0; max-width: none; flex: 1 1 100%; }
+  .toolbar-spacer { display: none; }
+  .filter-btn { flex: 1 1 auto; justify-content: center; }
+
+  /* ----- Detail header ----- */
+  .detail-head { grid-template-columns: 1fr; gap: 12px; }
+  .detail-actions { flex-wrap: wrap; }
+  .detail-actions .btn { flex: 1 1 auto; justify-content: center; }
+  .detail-title { font-size: 20px; }
+  .detail-strip { grid-template-columns: repeat(2, 1fr); }
+  .detail-strip .item:nth-child(2) { border-right: 0; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+
+  /* ----- Pagos: conectar MP ----- */
+  .mp-empty { grid-template-columns: 1fr; padding: 32px 20px; gap: 24px; }
+  .mp-empty .mp-illust { display: none; } /* decorativo, prioriza el copy + CTA */
+  .mp-account { grid-template-columns: auto 1fr; }
+
+  /* ----- Tablas densas: scroll horizontal en vez de aplastarse ----- */
+  .mlist, .locale-list, .dev-list, .card:has(.tx) {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mlist-row { min-width: 640px; }
+  .locale { min-width: 560px; }
+  .dev-row { min-width: 560px; }
+  .tx { min-width: 480px; }
+
+  .tabs, .tabs-detail {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+  }
+
+  /* ----- Modales: menos aire en los bordes ----- */
+  .modal-overlay { padding: 12px; }
+  .modal-body { padding: 16px; gap: 18px; }
+}
 
