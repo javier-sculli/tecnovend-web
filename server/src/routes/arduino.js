@@ -184,8 +184,12 @@ router.get('/config/:arduinoId', async (req, res) => {
 // Heartbeat: el Arduino late en background aunque nadie opere la máquina.
 // Independiente del poll de pulsos: dice "estoy viva y conectada" y, de paso,
 // reporta si está en servicio. Es el único input del estado de la máquina.
-// body: { rssi?, uptime?, fw?, in_service?: boolean }
+// body: { rssi?, uptime?, fw?, in_service?: boolean, raw_inhibit?, reset_reason?, reset_reason_text? }
 //   in_service true → active, false → maintenance. Si se omite, no toca status.
+//   raw_inhibit: lectura cruda del pin INHIBIT ('service' | 'out_of_service'),
+//   sin el debounce que aplica `in_service`. reset_reason/reset_reason_text:
+//   motivo del último reinicio del ESP32 (esp_reset_reason()), se manda en
+//   todos los heartbeats — ver tecnovend-arduino/api.cpp `resetReasonText()`.
 router.post('/heartbeat/:arduinoId', async (req, res) => {
   const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
@@ -196,7 +200,7 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
   }
 
   const machineId = machine.id;
-  const { rssi, uptime, fw, in_service, reason, affected_pulse_id } = req.body || {};
+  const { rssi, uptime, fw, in_service, reason, affected_pulse_id, raw_inhibit, reset_reason, reset_reason_text } = req.body || {};
   const hasService = typeof in_service === 'boolean';
   const status = hasService ? (in_service ? 'active' : 'maintenance') : null;
 
@@ -222,6 +226,9 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
     fw: typeof fw === 'string' ? fw : null,
     reason: typeof reason === 'string' ? reason : null,
     affected_pulse_id: typeof affected_pulse_id === 'string' ? affected_pulse_id : null,
+    raw_inhibit: typeof raw_inhibit === 'string' ? raw_inhibit : null,
+    reset_reason: Number.isInteger(reset_reason) ? reset_reason : null,
+    reset_reason_text: typeof reset_reason_text === 'string' ? reset_reason_text : null,
   });
 
   // Si se reporta un pulso afectado que falló (ej: por timeout de venta), disparamos la devolución
@@ -238,8 +245,10 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
     }
   }
 
-  // Si el heartbeat trae el reporte de servicio, lo dejamos en el timeline.
-  if (hasService) {
+  const statusChanged = status !== null && status !== machine.status;
+
+  // Si el heartbeat trae el reporte de servicio y cambió el estado, lo dejamos en el timeline.
+  if (statusChanged) {
     await logEvent(machineId, 'service', { in_service });
   }
 

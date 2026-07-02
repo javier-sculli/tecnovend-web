@@ -283,6 +283,36 @@ router.get('/:id/events', async (req, res) => {
   const events = await db.prepare(
     'SELECT type, detail, created_at FROM machine_events WHERE machine_id = ?'
   ).all(id);
+
+  // `reason` (heartbeatReason en el firmware): motivo del heartbeat en sí.
+  const reasonTranslations = {
+    startup: 'inicio (startup)',
+    out_of_service: 'fuera de servicio',
+    recovered: 'recuperación de servicio',
+    sale_timeout: 'timeout de venta',
+  };
+  // `reset_reason_text` (esp_reset_reason(), api.cpp `resetReasonText()`): motivo
+  // del último reinicio del ESP32. Viaja en TODOS los heartbeats (no solo el de
+  // startup), así que solo la mostramos/coloreamos en el heartbeat de inicio —
+  // repetirla en cada latido sería ruido, ya que no cambia hasta el próximo boot.
+  const resetReasonTranslations = {
+    poweron: 'encendido (power-on)',
+    external: 'reset externo / botón físico',
+    software: 'reinicio por software',
+    panic: 'excepción (panic)',
+    interrupt_wdt: 'watchdog de interrupción',
+    task_wdt: 'watchdog de tarea',
+    watchdog: 'watchdog',
+    deepsleep: 'salida de deep sleep',
+    brownout: 'baja tensión (brownout)',
+    sdio: 'SDIO',
+    unknown: 'desconocido',
+  };
+  // Reinicios que delatan un problema (crash/hang/alimentación) vs. los normales
+  // (se lo espera al enchufar la máquina o reprogramarla).
+  const BAD_RESET_REASONS = new Set(['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout']);
+  const WARN_RESET_REASONS = new Set(['sdio', 'unknown']);
+
   for (const e of events) {
     let d = {};
     try { d = e.detail ? JSON.parse(e.detail) : {}; } catch {}
@@ -291,23 +321,39 @@ router.get('/:id/events', async (req, res) => {
       if (d.rssi != null) parts.push(`${d.rssi} dBm`);
       if (d.uptime != null) parts.push(`uptime ${d.uptime}s`);
       if (d.fw) parts.push(`fw ${d.fw}`);
-      
+
       let desc = parts.join(' · ') || 'señal de vida';
       let kind = 'ok';
       let title = 'Heartbeat';
-      
+
       if (d.affected_pulse_id || d.reason === 'sale_timeout') {
         kind = 'warn';
         title = 'Heartbeat (Falla de Venta)';
         const failParts = [];
-        if (d.reason) failParts.push(`motivo: ${d.reason}`);
+        if (d.reason) {
+          const reasonText = reasonTranslations[d.reason] || d.reason;
+          failParts.push(`motivo: ${reasonText}`);
+        }
         if (d.affected_pulse_id) failParts.push(`pulso: ${d.affected_pulse_id}`);
         desc = `${desc} ⚠️ [FALLA] ${failParts.join(' · ')}`;
-      } else if (d.reason) {
-        // Otros motivos no críticos (ej: startup, out_of_service) se muestran en la descripción normal
-        desc = `${desc} · Motivo: ${d.reason === 'startup' ? 'inicio (startup)' : d.reason}`;
+      } else if (d.reason && d.reason !== 'recovered' && d.reason !== 'out_of_service') {
+        // 'recovered' y 'out_of_service' se omiten a propósito: ese mismo heartbeat
+        // siempre trae in_service y dispara su propio evento 'service' ("Volvió a
+        // servicio" / "Fuera de servicio", ver más abajo), que ya lo cuenta con un
+        // título claro — repetirlo acá como "Motivo: ..." quedaba redundante.
+        // 'startup' sí se muestra: es informativo y no tiene evento 'service' asociado.
+        const reasonText = reasonTranslations[d.reason] || d.reason;
+        desc = `${desc} · Motivo: ${reasonText}`;
       }
-      
+
+      // Motivo del reinicio del ESP32, solo en el heartbeat de arranque.
+      if (d.reason === 'startup' && d.reset_reason_text) {
+        const rrText = resetReasonTranslations[d.reset_reason_text] || d.reset_reason_text;
+        if (BAD_RESET_REASONS.has(d.reset_reason_text)) kind = 'bad';
+        else if (WARN_RESET_REASONS.has(d.reset_reason_text) && kind === 'ok') kind = 'warn';
+        desc = `${desc} · Reinició por: ${rrText}`;
+      }
+
       out.push({ type: e.type, kind, title, desc, at: e.created_at });
     } else if (e.type === 'config') {
       out.push({ type: e.type, kind: 'ok', title: 'Solicitó configuración', desc: d.pulse_value != null ? `pulse_value $${d.pulse_value}` : '', at: e.created_at });
