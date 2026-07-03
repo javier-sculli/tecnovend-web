@@ -534,6 +534,9 @@ body {
 .tx.pay-row {
   grid-template-columns: 34px 1.8fr 0.9fr 0.5fr 0.7fr 86px;
 }
+.tx.diag-row {
+  grid-template-columns: 34px 1.3fr 0.7fr 0.7fr 1.3fr 0.8fr 1.2fr;
+}
 .tx.head {
   padding: 9px 18px;
   background: var(--bg);

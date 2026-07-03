@@ -394,7 +394,34 @@ router.get('/:id/events', async (req, res) => {
   }
 
   out.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
-  res.json(out.slice(0, limit));
+});
+
+// Obtener logs de estado y diagnóstico de la máquina
+router.get('/:id/status-logs', async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 1000);
+  const logs = await db.prepare(`
+    SELECT id, detail, created_at
+    FROM machine_events
+    WHERE machine_id = ? AND type = 'status_log'
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(req.params.id, limit);
+
+  const parsedLogs = logs.map(log => {
+    let detail = {};
+    try {
+      detail = log.detail ? JSON.parse(log.detail) : {};
+    } catch (e) {
+      detail = { error: 'Error al parsear JSON del log' };
+    }
+    return {
+      id: log.id,
+      detail,
+      created_at: log.created_at
+    };
+  });
+
+  res.json(parsedLogs);
 });
 
 export default router;

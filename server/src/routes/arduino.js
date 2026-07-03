@@ -257,4 +257,23 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
   res.json({ ok: true, machine_id: machineId, status: status ?? machine.status });
 });
 
+// Status Log: El Arduino manda diagnóstico de red y hardware periódicamente.
+// Solo guardamos en la base de datos (machine_events) sin actualizar la telemetría viva de la máquina.
+router.post('/status/:arduinoId', async (req, res) => {
+  const machine = await resolveMachine(req.params.arduinoId);
+  if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
+
+  const apiKey = req.headers['x-api-key'];
+  if (!verifyApiKey(machine, apiKey)) {
+    return res.status(401).json({ error: 'No autorizado' });
+  }
+
+  const machineId = machine.id;
+  const detail = req.body || {};
+
+  await logEvent(machineId, 'status_log', detail);
+
+  res.json({ ok: true });
+});
+
 export default router;

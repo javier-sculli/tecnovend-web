@@ -458,6 +458,211 @@ function EventsCard({ machineId }) {
   );
 }
 
+/* ---------- Diagnostics Card ---------- */
+function DiagnosticsCard({ machineId }) {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedLogId, setExpandedLogId] = useState(null);
+  const [lastRefresh, setLastRefresh] = useState(null);
+
+  const load = async () => {
+    try {
+      const data = await apiFetch(`/api/machines/${machineId}/status-logs?limit=100`);
+      setLogs(data);
+      setLastRefresh(new Date());
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => { if (!cancelled) await load(); };
+    run();
+    const t = setInterval(run, 60000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [machineId]);
+
+  const getResetReasonColor = (reason) => {
+    if (!reason) return '';
+    const bad = ['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout'];
+    if (bad.includes(reason)) return 'var(--bad)';
+    const warn = ['sdio', 'unknown'];
+    if (warn.includes(reason)) return 'var(--warn)';
+    return 'var(--ok)';
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <div className="card-title">Historial de Diagnóstico</div>
+          <div className="card-sub">
+            {loading ? 'cargando…' : `${logs.length} reporte(s) de estado recibidos · auto-refresh cada 60 s`}
+          </div>
+        </div>
+        {lastRefresh && (
+          <span className="mono" style={{ fontSize: 11, color: 'var(--ink-4)' }}>
+            {lastRefresh.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        )}
+      </div>
+      {!loading && logs.length === 0 ? (
+        <div style={{ padding: '28px 18px', textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
+          No hay reportes de diagnóstico registrados para esta máquina aún.
+        </div>
+      ) : (
+        <>
+          <div className="tx diag-row head">
+            <span></span>
+            <span>Fecha</span>
+            <span>FW</span>
+            <span>Uptime</span>
+            <span>WiFi / Señal</span>
+            <span>RAM</span>
+            <span>Reinicio</span>
+          </div>
+          {logs.map((log) => {
+            const d = log.detail;
+            const isExpanded = expandedLogId === log.id;
+            const isBadReset = ['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout'].includes(d.reset_reason_text);
+            const hasNetFailures = d.consecutive_network_failures > 0;
+            const isOffline = d.wifi_status !== 3; // WL_CONNECTED is 3 on ESP32
+
+            return (
+              <React.Fragment key={log.id}>
+                <div 
+                  className="tx diag-row" 
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
+                >
+                  <span style={{ fontSize: '10px', color: 'var(--ink-4)' }}>
+                    {isExpanded ? '▼' : '▶'}
+                  </span>
+                  <span className="mono" style={{ fontSize: '12px' }}>
+                    {new Date(log.created_at.replace(' ', 'T') + 'Z').toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+                  <span className="mono" style={{ fontSize: '11px', color: 'var(--ink-3)' }}>
+                    {d.fw || '—'}
+                  </span>
+                  <span className="mono" style={{ fontSize: '11px' }}>
+                    {fmtUptime(d.uptime)}
+                  </span>
+                  <span className="mono" style={{ fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', color: isOffline ? 'var(--bad)' : 'inherit' }}>
+                    {d.ssid ? `${d.ssid} (${d.rssi} dBm)` : '—'}
+                  </span>
+                  <span className="mono" style={{ fontSize: '11px', color: 'var(--ink-2)' }}>
+                    {fmtUptime(d.uptime) !== '—' ? `${Math.round((d.free_heap || 0) / 1024)} KB` : '—'}
+                  </span>
+                  <span className="mono" style={{ fontSize: '11px', fontWeight: isBadReset ? 'bold' : 'normal', color: getResetReasonColor(d.reset_reason_text) }}>
+                    {d.reset_reason_text || '—'}
+                  </span>
+                </div>
+                {isExpanded && (
+                  <div 
+                    style={{ 
+                      padding: '16px 20px', 
+                      background: 'var(--hover)', 
+                      borderTop: '1px solid var(--line-2)',
+                      borderBottom: '1px solid var(--line-2)',
+                      fontSize: '12px'
+                    }}
+                  >
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px 20px' }}>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Firmware:</strong>{' '}
+                        <span className="mono">{d.fw || '—'}</span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Tiempo Activo (Uptime):</strong>{' '}
+                        <span className="mono">{d.uptime ? `${d.uptime} seg (${fmtUptime(d.uptime)})` : '—'}</span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>WiFi SSID:</strong>{' '}
+                        <span className="mono">{d.ssid || '—'}</span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Señal WiFi (RSSI):</strong>{' '}
+                        <span className="mono" style={{ color: d.rssi < -80 ? 'var(--warn)' : 'inherit' }}>
+                          {d.rssi ? `${d.rssi} dBm` : '—'}
+                        </span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Estado WiFi (Código):</strong>{' '}
+                        <span className="mono" style={{ color: isOffline ? 'var(--bad)' : 'inherit' }}>
+                          {d.wifi_status != null ? `${d.wifi_status} ${isOffline ? '(Desconectado)' : '(Conectado)'}` : '—'}
+                        </span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>En Servicio:</strong>{' '}
+                        <span className="mono" style={{ fontWeight: '500', color: d.in_service ? 'var(--ok)' : 'var(--warn)' }}>
+                          {d.in_service ? 'Sí' : 'No (Mantenimiento)'}
+                        </span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Pin Inhibit Crudo:</strong>{' '}
+                        <span className="mono">{d.raw_inhibit || '—'}</span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Estado de Comunicación:</strong>{' '}
+                        <span className="mono">{d.communication_state || '—'}</span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Fallas de Red Consecutivas:</strong>{' '}
+                        <span className="mono" style={{ fontWeight: hasNetFailures ? 'bold' : 'normal', color: hasNetFailures ? 'var(--bad)' : 'inherit' }}>
+                          {d.consecutive_network_failures ?? 0}
+                        </span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Tiempo desde Red OK:</strong>{' '}
+                        <span className="mono">{d.seconds_since_network_ok ? `${d.seconds_since_network_ok} seg` : '0 seg'}</span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>ACKs en Cola (RAM):</strong>{' '}
+                        <span className="mono" style={{ color: d.pending_ack > 0 ? 'var(--warn)' : 'inherit' }}>
+                          {d.pending_ack ?? 0}
+                        </span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Config Local Cargada:</strong>{' '}
+                        <span className="mono">{d.config_loaded ? 'Sí' : 'No'}</span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Reporte de Inicio Enviado:</strong>{' '}
+                        <span className="mono">{d.startup_sent ? 'Sí' : 'No'}</span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Memoria RAM Libre:</strong>{' '}
+                        <span className="mono">
+                          {d.free_heap ? `${d.free_heap.toLocaleString()} bytes (~${Math.round(d.free_heap / 1024)} KB)` : '—'}
+                        </span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Motivo de Reinicio:</strong>{' '}
+                        <span className="mono" style={{ fontWeight: isBadReset ? 'bold' : 'normal', color: getResetReasonColor(d.reset_reason_text) }}>
+                          {d.reset_reason_text ? `${d.reset_reason_text} (${d.reset_reason})` : '—'}
+                        </span>
+                      </div>
+                      <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Operación de Red al Fallar/Latir:</strong>{' '}
+                        <span className="mono" style={{ color: d.netop && d.netop !== 'idle' ? 'var(--warn)' : 'inherit' }}>
+                          {d.netop || '—'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Pulses Card ---------- */
 // Estado → etiqueta + color (spill). 'expired' = no acreditó.
 const PULSE_STATUS = {
@@ -1030,6 +1235,7 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
         <button className={tab === "pagos" ? "on" : ""} onClick={() => setTab("pagos")}>Pagos</button>
         <button className={tab === "pulsos" ? "on" : ""} onClick={() => setTab("pulsos")}>Pulsos</button>
         <button className={tab === "eventos" ? "on" : ""} onClick={() => setTab("eventos")}>Eventos</button>
+        <button className={tab === "diagnostico" ? "on" : ""} onClick={() => setTab("diagnostico")}>Diagnóstico</button>
       </div>
 
       {tab === "pagos" && (
@@ -1043,6 +1249,8 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
       {tab === "pulsos" && <PulsesCard machineId={m.id} />}
 
       {tab === "eventos" && <EventsCard machineId={m.id} />}
+
+      {tab === "diagnostico" && <DiagnosticsCard machineId={m.id} />}
 
       {tab === "config" && (
       <div className="detail-grid">
