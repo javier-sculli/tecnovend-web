@@ -394,6 +394,7 @@ router.get('/:id/events', async (req, res) => {
   }
 
   out.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  res.json(out.slice(0, limit));
 });
 
 // Obtener logs de estado y diagnóstico de la máquina
