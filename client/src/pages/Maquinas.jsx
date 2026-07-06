@@ -1069,6 +1069,8 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
   const [showWifiPass, setShowWifiPass] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [tab, setTab] = useState("config");
+  const [targetFwVersion, setTargetFwVersion] = useState(m?.target_fw_version ?? "");
+  const [otaUrl, setOtaUrl] = useState(m?.ota_url ?? "");
 
   // Sync state if machine changes — pero NO mientras se está editando, así el
   // auto-refresh de fondo no pisa lo que el usuario está tipeando. Al salir de
@@ -1084,6 +1086,8 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
       setWifiPassword(m.wifi_password ?? "");
       setQrMode(m.qr_mode ?? "dynamic");
       setQrFixedAmount(m.qr_fixed_amount ?? "");
+      setTargetFwVersion(m.target_fw_version ?? "");
+      setOtaUrl(m.ota_url ?? "");
     }
   }, [m, editMode]);
 
@@ -1108,6 +1112,15 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
       alert("Para precio fijo ingresá un valor entero de al menos $15 (mínimo de Mercado Pago).");
       return;
     }
+
+    const hasFwChanges = targetFwVersion.trim() !== (m.target_fw_version ?? "") || otaUrl.trim() !== (m.ota_url ?? "");
+    if (hasFwChanges && targetFwVersion.trim() !== "") {
+      const confirmUpdate = window.confirm(
+        "¿Estás seguro de que deseas programar la actualización de firmware de esta máquina?\n\nSi el binario es incorrecto o incompatible, el equipo podría quedar inoperativo en el próximo reinicio."
+      );
+      if (!confirmUpdate) return;
+    }
+
     onUpdateMachine(m.id, {
       pulse_value: Number(pulseValue) || 0,
       pulse_duration_ms: Number(pulseDuration) || 0,
@@ -1118,6 +1131,8 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
       wifi_password: wifiPassword,
       qr_mode: qrMode,
       ...(qrMode === "fixed" ? { qr_fixed_amount: Number(qrFixedAmount) } : {}),
+      target_fw_version: targetFwVersion.trim() || null,
+      ota_url: otaUrl.trim() || null,
     });
     setShowWifiPass(false);
     setEditMode(false);
@@ -1427,8 +1442,34 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
                 </div>
               </div>
               <div className="kv">
-                <span className="k">Versión</span>
-                <div className="v mono">{m.firmware}</div>
+                <span className="k">Versión Actual</span>
+                <div className="v mono">{m.firmware_version || m.firmware || "—"}</div>
+              </div>
+              <div className="kv">
+                <span className="k">Versión Destino (OTA)</span>
+                <div className="v v-edit">
+                  <input
+                    type="text"
+                    value={targetFwVersion}
+                    onChange={(e) => setTargetFwVersion(e.target.value)}
+                    disabled={!editMode}
+                    placeholder={editMode ? "Ej: 0.0.3" : "—"}
+                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
+                  />
+                </div>
+              </div>
+              <div className="kv">
+                <span className="k">URL del Binario (OTA)</span>
+                <div className="v v-edit">
+                  <input
+                    type="text"
+                    value={otaUrl}
+                    onChange={(e) => setOtaUrl(e.target.value)}
+                    disabled={!editMode}
+                    placeholder={editMode ? "Ej: https://github.com/.../firmware.bin" : "—"}
+                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)", fontFamily: "monospace" } : {}}
+                  />
+                </div>
               </div>
               <div className="kv">
                 <span className="k">Hardware</span>

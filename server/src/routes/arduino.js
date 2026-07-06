@@ -1,3 +1,4 @@
+import newrelic from 'newrelic';
 import { Router } from 'express';
 import crypto from 'crypto';
 import db from '../db/schema.js';
@@ -10,7 +11,17 @@ const router = Router();
 // firmware). Todos los endpoints reciben ese ID y resuelven a qué máquina
 // pertenece. Devuelve la fila completa de la máquina o null.
 async function resolveMachine(arduinoId) {
-  return await db.prepare('SELECT * FROM machines WHERE arduino_id = ?').get(arduinoId);
+  const machine = await db.prepare('SELECT * FROM machines WHERE arduino_id = ?').get(arduinoId);
+  if (machine) {
+    newrelic.addCustomAttributes({
+      arduino_id: arduinoId,
+      machine_id: machine.id,
+      machine_name: machine.name
+    });
+  } else {
+    newrelic.addCustomAttribute('arduino_id', arduinoId);
+  }
+  return machine;
 }
 
 function verifyApiKey(machine, apiKey) {
@@ -27,6 +38,7 @@ async function logEvent(machineId, type, detail) {
 
 // Polling: Arduino consulta pulsos pendientes
 router.get('/poll/:arduinoId', async (req, res) => {
+  newrelic.addCustomAttribute('arduino_action', 'poll');
   const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
@@ -49,6 +61,7 @@ router.get('/poll/:arduinoId', async (req, res) => {
   // El firmware NO debería pollear en este estado (se entera por el `status`
   // del heartbeat); esto queda como red de seguridad.
   if (machine.status !== 'active') {
+    newrelic.addCustomAttribute('pending_pulses_count', 0);
     return res.json({ machine_id: machineId, pending_pulses: [] });
   }
 
@@ -70,6 +83,11 @@ router.get('/poll/:arduinoId', async (req, res) => {
       .run(...ids);
   }
 
+  newrelic.addCustomAttributes({
+    pending_pulses_count: pending.length,
+    pending_pulses_ids: pending.map(p => p.id).join(',')
+  });
+
   res.json({
     machine_id: machineId,
     pending_pulses: pending.map(p => ({ pulse_id: p.id, channel: p.channel, count: p.count }))
@@ -79,6 +97,10 @@ router.get('/poll/:arduinoId', async (req, res) => {
 // ACK: Arduino confirma que ejecutó el pulso
 router.post('/ack/:arduinoId/:pulseId', async (req, res) => {
   const { pulseId } = req.params;
+  newrelic.addCustomAttributes({
+    arduino_action: 'ack',
+    pulse_id: pulseId
+  });
   const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
@@ -96,6 +118,8 @@ router.post('/ack/:arduinoId/:pulseId', async (req, res) => {
   const pulse = await db.prepare(`SELECT id, status FROM pulse_queue WHERE id = ? AND machine_id = ?`).get(pulseId, machineId);
   if (!pulse) return res.status(404).json({ error: 'Pulso no encontrado' });
 
+  newrelic.addCustomAttribute('pulse_status', pulse.status);
+
   // No reactivar pulsos ya expirados (no acreditaron) por un ACK tardío.
   if (pulse.status === 'expired') {
     return res.status(409).json({ error: 'Pulso expirado (no acreditó)', code: 'expired' });
@@ -111,6 +135,10 @@ router.post('/ack/:arduinoId/:pulseId', async (req, res) => {
 // Idempotente: si el pago ya se reembolsó, responde ok sin volver a llamar a MP.
 router.post('/refund/:arduinoId/:pulseId', async (req, res) => {
   const { pulseId } = req.params;
+  newrelic.addCustomAttributes({
+    arduino_action: 'refund',
+    pulse_id: pulseId
+  });
   const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
@@ -123,6 +151,11 @@ router.post('/refund/:arduinoId/:pulseId', async (req, res) => {
     .get(pulseId, machine.id);
   if (!pulse) return res.status(404).json({ error: 'Pulso no encontrado' });
 
+  newrelic.addCustomAttributes({
+    pulse_status: pulse.status,
+    payment_id: pulse.payment_id
+  });
+
   // Si ya está confirmado (acreditó), no se devuelve: el producto salió bien.
   if (pulse.status === 'acked') {
     return res.status(409).json({ error: 'El pulso ya fue confirmado (acreditado)', code: 'already_acked' });
@@ -132,12 +165,17 @@ router.post('/refund/:arduinoId/:pulseId', async (req, res) => {
   await db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulseId);
 
   if (!pulse.payment_id) {
+    newrelic.addCustomAttribute('refunded', false);
     return res.json({ ok: true, pulse_id: pulseId, refunded: false, reason: 'pulso sin pago asociado' });
   }
 
   // Reembolso del pago. Si MP falla, queda marcado 'failed' y el barrido lo
   // reintenta solo; igual respondemos ok al Arduino (el pulso ya salió de la cola).
   const r = await refundPaymentById(pulse.payment_id);
+  newrelic.addCustomAttributes({
+    refunded: r.ok === true,
+    refund_error: r.error || null
+  });
   res.json({ ok: true, pulse_id: pulseId, refunded: r.ok === true, refund_error: r.error || null });
 });
 
@@ -145,6 +183,7 @@ router.post('/refund/:arduinoId/:pulseId', async (req, res) => {
 //   - Red WiFi: credenciales propias del equipo.
 //   - Parámetros de pulso (valor, duración, gap).
 router.get('/config/:arduinoId', async (req, res) => {
+  newrelic.addCustomAttribute('arduino_action', 'config');
   const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
@@ -191,6 +230,22 @@ router.get('/config/:arduinoId', async (req, res) => {
 //   motivo del último reinicio del ESP32 (esp_reset_reason()), se manda en
 //   todos los heartbeats — ver tecnovend-arduino/api.cpp `resetReasonText()`.
 router.post('/heartbeat/:arduinoId', async (req, res) => {
+  const { rssi, uptime, fw, in_service, reason, affected_pulse_id, raw_inhibit, reset_reason, reset_reason_text } = req.body || {};
+  newrelic.addCustomAttributes({
+    arduino_action: 'heartbeat',
+    heartbeat_rssi: rssi ?? null,
+    heartbeat_uptime: uptime ?? null,
+    heartbeat_fw: fw ?? null,
+    heartbeat_in_service: in_service ?? null,
+    heartbeat_reason: reason ?? null,
+    heartbeat_raw_inhibit: raw_inhibit ?? null,
+    heartbeat_reset_reason: reset_reason ?? null,
+    heartbeat_reset_reason_text: reset_reason_text ?? null
+  });
+  if (affected_pulse_id) {
+    newrelic.addCustomAttribute('heartbeat_affected_pulse_id', affected_pulse_id);
+  }
+
   const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
@@ -200,7 +255,6 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
   }
 
   const machineId = machine.id;
-  const { rssi, uptime, fw, in_service, reason, affected_pulse_id, raw_inhibit, reset_reason, reset_reason_text } = req.body || {};
   const hasService = typeof in_service === 'boolean';
   const status = hasService ? (in_service ? 'active' : 'maintenance') : null;
 
@@ -220,6 +274,31 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
     machineId,
   );
 
+  // Procesamiento de estados de actualización OTA (Éxito, Falla o Rollback)
+  let otaCleared = false;
+  if (machine.target_fw_version) {
+    newrelic.addCustomAttribute('ota_target_version', machine.target_fw_version);
+    if (fw === machine.target_fw_version) {
+      // Éxito: el Arduino reporta que ya corre la versión esperada
+      await db.prepare('UPDATE machines SET target_fw_version = NULL, ota_url = NULL WHERE id = ?').run(machineId);
+      await logEvent(machineId, 'ota_success', { version: fw });
+      newrelic.addCustomAttribute('ota_status', 'success');
+      otaCleared = true;
+    } else if (reason === 'ota_rollback') {
+      // Rollback: la versión nueva falló y la placa volvió automáticamente a la anterior
+      await db.prepare('UPDATE machines SET target_fw_version = NULL, ota_url = NULL WHERE id = ?').run(machineId);
+      await logEvent(machineId, 'ota_rollback', { from_version: machine.target_fw_version, returned_to_version: fw });
+      newrelic.addCustomAttribute('ota_status', 'rollback');
+      otaCleared = true;
+    } else if (reason === 'ota_failed') {
+      // Falla Directa: no se pudo descargar/grabar el binario
+      await db.prepare('UPDATE machines SET target_fw_version = NULL, ota_url = NULL WHERE id = ?').run(machineId);
+      await logEvent(machineId, 'ota_failed', { target_version: machine.target_fw_version, error: req.body.ota_error || 'Error desconocido' });
+      newrelic.addCustomAttribute('ota_status', 'failed');
+      otaCleared = true;
+    }
+  }
+
   await logEvent(machineId, 'heartbeat', {
     rssi: Number.isInteger(rssi) ? rssi : null,
     uptime: Number.isInteger(uptime) ? uptime : null,
@@ -233,10 +312,10 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
 
   // Si se reporta un pulso afectado que falló (ej: por timeout de venta), disparamos la devolución
   if (affected_pulse_id) {
-    const pulse = await db.prepare(`SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?`)
+    const pulse = await db.prepare('SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?')
       .get(affected_pulse_id, machineId);
     if (pulse) {
-      await db.prepare(`UPDATE pulse_queue SET status = 'expired' WHERE id = ?`).run(pulse.id);
+      await db.prepare("UPDATE pulse_queue SET status = 'expired' WHERE id = ?").run(pulse.id);
       if (pulse.payment_id) {
         refundPaymentById(pulse.payment_id)
           .then(r => console.log(`[heartbeat-refund] Reembolso solicitado vía affected_pulse_id ${affected_pulse_id}:`, r.ok))
@@ -254,12 +333,22 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
 
   // El firmware decide si poolear según `status`: si no es 'active', no debería
   // pedir pulsos (solo mantener el heartbeat).
-  res.json({ ok: true, machine_id: machineId, status: status ?? machine.status });
+  const responseData = { ok: true, machine_id: machineId, status: status ?? machine.status };
+
+  if (machine.target_fw_version && fw !== machine.target_fw_version && !otaCleared && machine.ota_url) {
+    responseData.ota = {
+      version: machine.target_fw_version,
+      url: machine.ota_url
+    };
+  }
+
+  res.json(responseData);
 });
 
 // Status Log: El Arduino manda diagnóstico de red y hardware periódicamente.
 // Solo guardamos en la base de datos (machine_events) sin actualizar la telemetría viva de la máquina.
 router.post('/status/:arduinoId', async (req, res) => {
+  newrelic.addCustomAttribute('arduino_action', 'status_log');
   const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
@@ -270,6 +359,9 @@ router.post('/status/:arduinoId', async (req, res) => {
 
   const machineId = machine.id;
   const detail = req.body || {};
+
+  if (detail.free_heap) newrelic.addCustomAttribute('status_free_heap', detail.free_heap);
+  if (detail.conn_type) newrelic.addCustomAttribute('status_conn_type', detail.conn_type);
 
   await logEvent(machineId, 'status_log', detail);
 

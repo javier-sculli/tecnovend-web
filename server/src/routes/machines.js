@@ -108,6 +108,7 @@ router.put('/:id', async (req, res) => {
     pulse_duration_ms, pulse_gap_ms,
     wifi_ssid, wifi_user, wifi_password,
     qr_mode, qr_fixed_amount,
+    target_fw_version, ota_url,
   } = req.body;
   const machine = await db.prepare('SELECT id FROM machines WHERE id = ?').get(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
@@ -193,6 +194,18 @@ router.put('/:id', async (req, res) => {
   if (Object.prototype.hasOwnProperty.call(req.body, 'client_id')) {
     await db.prepare('UPDATE machines SET client_id = ? WHERE id = ?')
       .run(client_id ?? null, req.params.id);
+  }
+
+  // target_fw_version necesita manejo explícito para permitir poner en null.
+  if (Object.prototype.hasOwnProperty.call(req.body, 'target_fw_version')) {
+    await db.prepare('UPDATE machines SET target_fw_version = ? WHERE id = ?')
+      .run(target_fw_version || null, req.params.id);
+  }
+
+  // ota_url necesita manejo explícito para permitir poner en null.
+  if (Object.prototype.hasOwnProperty.call(req.body, 'ota_url')) {
+    await db.prepare('UPDATE machines SET ota_url = ? WHERE id = ?')
+      .run(ota_url || null, req.params.id);
   }
 
   // Si la config de QR quedó en precio fijo, cargamos la orden en el QR ahora.

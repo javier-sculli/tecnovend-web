@@ -106,6 +106,8 @@ export async function initDb() {
       api_key         TEXT,
       last_seen_at    TIMESTAMP,
       firmware_version TEXT,
+      target_fw_version TEXT,
+      ota_url         TEXT,
       last_rssi       INTEGER,
       last_uptime     INTEGER,
       client_id       TEXT REFERENCES clients(id) ON DELETE SET NULL,
@@ -124,6 +126,9 @@ export async function initDb() {
   // Se setea al mandar el aviso y se limpia (NULL) cuando la máquina vuelve a
   // latir, para que un nuevo corte vuelva a avisar. Ver services/offline-alerts.js.
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS offline_notified_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_fw_version TEXT;`);
+  await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS ota_url TEXT;`);
+
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS payments (
