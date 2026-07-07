@@ -1,9 +1,8 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './auth.jsx';
 import Login from './pages/Login.jsx';
-// Dashboard y Clientes ocultos por ahora — las páginas quedan en el código
-// para reactivarlas más adelante (restaurar imports + rutas + sidebar).
-// import Dashboard from './pages/Dashboard.jsx';
+// Clientes oculto por ahora
+import Dashboard from './pages/Dashboard.jsx';
 // import Clientes from './pages/Clientes.jsx';
 import Maquinas from './pages/Maquinas.jsx';
 import Pagos from './pages/Pagos.jsx';
@@ -30,6 +29,7 @@ export default function App() {
       <Route path="/maquinas" element={<RequireAuth><Maquinas /></RequireAuth>} />
       <Route path="/maquinas/:id" element={<RequireAuth><Maquinas /></RequireAuth>} />
       <Route path="/pagos" element={<RequireAuth><Pagos /></RequireAuth>} />
+      <Route path="/reportes" element={<RequireAuth><Dashboard /></RequireAuth>} />
       <Route path="/qr-tester" element={<RequireAuth><QRTester /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

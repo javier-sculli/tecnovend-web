@@ -13,6 +13,7 @@ import arduinoRouter from './routes/arduino.js';
 import mpRouter from './routes/mp.js';
 import debugRouter from './routes/debug.js';
 import docsRouter from './routes/docs.js';
+import dashboardRouter from './routes/dashboard.js';
 
 // Inicializar BD (crea tablas y ejecuta migraciones)
 import { initDb } from './db/schema.js';
@@ -43,6 +44,7 @@ app.use('/api/mp', mpRouter);
 app.use('/arduino', arduinoRouter);
 app.use('/api/debug', debugRouter);
 app.use('/api/docs', docsRouter);
+app.use('/api/dashboard', dashboardRouter);
 
 // Web de gestión: el mismo Express sirve el build de React (client/dist copiado
 // a server/public con `npm run build:web` desde la raíz). Va DESPUÉS de las

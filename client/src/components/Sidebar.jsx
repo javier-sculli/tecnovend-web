@@ -10,11 +10,10 @@ export default function Sidebar() {
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
   const navOps = [
-    // Dashboard y Clientes ocultos por ahora (las páginas siguen en el código,
-    // se reactivan agregándolos acá y restaurando sus rutas en App.jsx).
+    // Clientes oculto por ahora
     { id: "maquinas",  ico: Icon.machine, label: "Máquinas",        href: "/maquinas", count: 47 },
     { id: "pagos",     ico: Icon.card,    label: "Pagos · MP",      href: "/pagos", dot: true },
-    { id: "reportes",  ico: Icon.chart,   label: "Reportes",        href: "#" },
+    { id: "reportes",  ico: Icon.chart,   label: "Reportes",        href: "/reportes" },
   ];
 
   const navDev = [

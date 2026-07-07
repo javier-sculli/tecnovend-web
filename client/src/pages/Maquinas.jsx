@@ -1451,7 +1451,16 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
                   <input
                     type="text"
                     value={targetFwVersion}
-                    onChange={(e) => setTargetFwVersion(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setTargetFwVersion(val);
+                      const versionNumber = val.trim().replace(/^v/i, '');
+                      if (versionNumber) {
+                        setOtaUrl(`https://github.com/tecnovend/tecnovend-arduino/releases/download/v${versionNumber}/firmware-vv${versionNumber}.bin`);
+                      } else {
+                        setOtaUrl("");
+                      }
+                    }}
                     disabled={!editMode}
                     placeholder={editMode ? "Ej: 0.0.3" : "—"}
                     style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
