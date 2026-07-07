@@ -296,6 +296,10 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
       await logEvent(machineId, 'ota_failed', { target_version: machine.target_fw_version, error: req.body.ota_error || 'Error desconocido' });
       newrelic.addCustomAttribute('ota_status', 'failed');
       otaCleared = true;
+    } else if (reason === 'ota_start') {
+      // Inicio: el Arduino reporta que comienza la descarga
+      await logEvent(machineId, 'ota_start', { target_version: machine.target_fw_version });
+      newrelic.addCustomAttribute('ota_status', 'start');
     }
   }
 
