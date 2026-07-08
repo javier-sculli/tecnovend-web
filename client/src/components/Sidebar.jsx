@@ -16,10 +16,6 @@ export default function Sidebar() {
     { id: "reportes",  ico: Icon.chart,   label: "Reportes",        href: "/reportes" },
   ];
 
-  const navDev = [
-    { id: "qr-tester", ico: Icon.qr, label: "QR · Tester", href: "/qr-tester" },
-  ];
-
   const navSys = [
     { ico: Icon.cog,     label: "Configuración" }
   ];
@@ -73,19 +69,6 @@ export default function Sidebar() {
             </NavLink>
           );
         })}
-
-        <div className="nav-section">Desarrollo</div>
-        {navDev.map((n, i) => (
-          <NavLink
-            key={i}
-            to={n.href}
-            onClick={close}
-            className={({ isActive }) => "nav-item " + (isActive ? "active" : "")}
-          >
-            {n.ico}
-            <span>{n.label}</span>
-          </NavLink>
-        ))}
 
         <div className="nav-section">Sistema</div>
         {navSys.map((n, i) => (

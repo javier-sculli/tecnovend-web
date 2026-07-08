@@ -176,52 +176,6 @@ router.get('/pos/:machineId', async (req, res) => {
   }
 });
 
-// PUT /api/mp/pos/:machineId/order — cargar una orden al QR estático
-router.put('/pos/:machineId/order', async (req, res) => {
-  const { amount, description } = req.body;
-  if (!amount || amount < 15) return res.status(400).json({ error: 'amount requerido y debe ser >= $15 (mínimo de Mercado Pago)' });
-
-  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
-  if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
-  if (!machine.pos_id) return res.status(404).json({ error: 'Sin POS configurado', code: 'no_pos' });
-  if (machine.status !== 'active') return res.status(409).json({ error: 'Máquina fuera de servicio — no se puede generar QR', code: 'out_of_service' });
-
-  const externalRef = `tv_${machine.id}_${Date.now()}`;
-  try {
-    const order = await mp.createOrder(machine.pos_id, {
-      amount,
-      description: description || machine.name,
-      externalReference: externalRef,
-    }, machine.client_id);
-    res.json({ ok: true, external_reference: externalRef, order_id: order?.id || null });
-  } catch (e) {
-    console.error('[mp/order]', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// GET /api/mp/orders/:orderId — estado de una orden en MP
-router.get('/orders/:orderId', async (req, res) => {
-  try {
-    const order = await mp.getOrder(req.params.orderId, orgOf(req));
-    res.json({ id: order.id, status: order.status, total_amount: order.total_amount });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// DELETE /api/mp/pos/:machineId/order — limpiar orden del QR
-router.delete('/pos/:machineId/order', async (req, res) => {
-  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.machineId);
-  if (!machine || !machine.pos_id) return res.status(404).json({ error: 'Sin POS' });
-
-  try {
-    await mp.deleteOrder(machine.pos_id);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 // GET /api/mp/payments — pagos recientes de la BD local
 router.get('/payments', async (req, res) => {

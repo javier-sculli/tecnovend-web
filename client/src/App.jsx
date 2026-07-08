@@ -6,7 +6,6 @@ import Dashboard from './pages/Dashboard.jsx';
 // import Clientes from './pages/Clientes.jsx';
 import Maquinas from './pages/Maquinas.jsx';
 import Pagos from './pages/Pagos.jsx';
-import QRTester from './pages/QRTester.jsx';
 
 // Gate de autenticación: sin sesión → /login (recordando a dónde iba).
 function RequireAuth({ children }) {
@@ -30,7 +29,6 @@ export default function App() {
       <Route path="/maquinas/:id" element={<RequireAuth><Maquinas /></RequireAuth>} />
       <Route path="/pagos" element={<RequireAuth><Pagos /></RequireAuth>} />
       <Route path="/reportes" element={<RequireAuth><Dashboard /></RequireAuth>} />
-      <Route path="/qr-tester" element={<RequireAuth><QRTester /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
