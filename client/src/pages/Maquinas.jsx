@@ -562,8 +562,8 @@ function DiagnosticsCard({ machineId }) {
                   <span className="mono" style={{ fontSize: '11px', color: 'var(--ink-2)' }}>
                     {fmtUptime(d.uptime) !== '—' ? `${Math.round((d.free_heap || 0) / 1024)} KB` : '—'}
                   </span>
-                  <span className="mono" style={{ fontSize: '11px', fontWeight: isBadReset ? 'bold' : 'normal', color: getResetReasonColor(d.reset_reason_text) }}>
-                    {d.reset_reason_text || '—'}
+                  <span className="mono" style={{ fontSize: '11px', fontWeight: (isBadReset && d.uptime < 120) ? 'bold' : 'normal', color: d.uptime < 120 ? getResetReasonColor(d.reset_reason_text) : 'var(--ink-4)' }}>
+                    {d.uptime < 120 ? (d.reset_reason_text || '—') : '—'}
                   </span>
                 </div>
                 {isExpanded && (
