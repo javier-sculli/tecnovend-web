@@ -31,11 +31,12 @@ const fmtUptime = (sec) => {
   return `${m}m`;
 };
 
-const wifiQuality = (rssi) => {
-  if (rssi == null) return '—';
-  if (rssi >= -60) return 'señal fuerte';
-  if (rssi >= -75) return 'señal media';
-  return 'señal débil';
+const getWifiDetails = (rssi) => {
+  if (rssi == null) return { text: '—', color: 'var(--ink-4)' };
+  if (rssi >= -60) return { text: 'Excelente', color: 'var(--ok)' };
+  if (rssi >= -70) return { text: 'Buena', color: '#84cc16' };
+  if (rssi >= -77) return { text: 'Regular', color: 'var(--warn)' };
+  return { text: 'Crítica', color: 'var(--bad)' };
 };
 
 // Estado consolidado de la máquina (campo `state` del backend)
@@ -550,7 +551,7 @@ function DiagnosticsCard({ machineId }) {
                   <span className="mono" style={{ fontSize: '11px' }}>
                     {fmtUptime(d.uptime)}
                   </span>
-                  <span className="mono" style={{ fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', color: isOffline ? 'var(--bad)' : 'inherit' }}>
+                  <span className="mono" style={{ fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', color: d.rssi != null ? getWifiDetails(d.rssi).color : 'inherit' }}>
                     {d.ssid ? `${d.ssid} (${d.rssi} dBm)` : '—'}
                   </span>
                   <span className="mono" style={{ fontSize: '11px', color: 'var(--ink-2)' }}>
@@ -585,8 +586,8 @@ function DiagnosticsCard({ machineId }) {
                       </div>
                       <div>
                         <strong style={{ color: 'var(--ink-3)' }}>Señal WiFi (RSSI):</strong>{' '}
-                        <span className="mono" style={{ color: d.rssi < -80 ? 'var(--warn)' : 'inherit' }}>
-                          {d.rssi ? `${d.rssi} dBm` : '—'}
+                        <span className="mono" style={d.rssi != null ? { color: getWifiDetails(d.rssi).color, fontWeight: 'bold' } : {}}>
+                          {d.rssi ? `${getWifiDetails(d.rssi).text} (${d.rssi} dBm)` : '—'}
                         </span>
                       </div>
                       <div>
@@ -1227,9 +1228,11 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
         )}
         <div className="item">
           <span className="label">Señal WiFi</span>
-          <span className="value">{m.last_rssi != null ? `${m.last_rssi} dBm` : "—"}</span>
+          <span className="value" style={m.last_rssi != null ? { color: getWifiDetails(m.last_rssi).color } : {}}>
+            {m.last_rssi != null ? `${getWifiDetails(m.last_rssi).text} (${m.last_rssi} dBm)` : "—"}
+          </span>
           <span className="delta-row">
-            <span style={{ color: "var(--ink-3)" }}>{wifiQuality(m.last_rssi)}</span>
+            <span style={{ color: "var(--ink-3)" }}>{m.wifi_ssid ? `Red: ${m.wifi_ssid}` : "estado de red"}</span>
           </span>
         </div>
         <div className="item">
