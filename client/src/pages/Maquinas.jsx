@@ -657,6 +657,14 @@ function DiagnosticsCard({ machineId }) {
                           {d.netop || '—'}
                         </span>
                       </div>
+                      {d.last_breadcrumb && d.last_breadcrumb !== 'none' && d.last_breadcrumb !== 'poweron/clean' && (
+                        <div>
+                          <strong style={{ color: 'var(--ink-3)' }}>Último Checkpoint antes del reinicio:</strong>{' '}
+                          <span className="mono" style={{ color: 'var(--warn)', fontWeight: 'bold' }}>
+                            {d.last_breadcrumb}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
