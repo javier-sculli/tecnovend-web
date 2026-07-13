@@ -60,7 +60,11 @@ export function AuthProvider({ children }) {
     setOrgs([]);
   }, []);
 
-  const selectOrg = useCallback((id) => { setOrg(id); setOrgId(id); }, []);
+  const selectOrg = useCallback((id) => {
+    setOrg(id);
+    setOrgId(id);
+    window.location.reload();
+  }, []);
 
   const currentOrg = orgs.find(o => o.id === orgId) || null;
 
