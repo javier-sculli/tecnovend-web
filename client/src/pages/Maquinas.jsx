@@ -495,7 +495,7 @@ function DiagnosticsCard({ machineId }) {
     if (!reason) return '';
     const bad = ['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout'];
     if (bad.includes(reason)) return 'var(--bad)';
-    const warn = ['sdio', 'unknown'];
+    const warn = ['sdio', 'unknown', 'software: wifi stale'];
     if (warn.includes(reason)) return 'var(--warn)';
     return 'var(--ok)';
   };
@@ -533,7 +533,7 @@ function DiagnosticsCard({ machineId }) {
           {logs.map((log) => {
             const d = log.detail;
             const isExpanded = expandedLogId === log.id;
-            const isBadReset = ['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout'].includes(d.reset_reason_text);
+            const isBadReset = ['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout', 'software: wifi stale'].includes(d.reset_reason_text);
             const hasNetFailures = d.consecutive_network_failures > 0;
             const isOffline = d.wifi_status !== 3; // WL_CONNECTED is 3 on ESP32
 
