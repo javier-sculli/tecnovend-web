@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon } from './Icons.jsx';
 import { useAuth } from '../auth.jsx';
 import { apiFetch } from '../api.js';
@@ -47,7 +48,7 @@ function ChangePasswordModal({ onClose }) {
     }
   };
 
-  return (
+  return createPortal(
     <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" style={{ maxWidth: 400 }}>
         <div className="modal-head">
@@ -116,7 +117,8 @@ function ChangePasswordModal({ onClose }) {
           </form>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
