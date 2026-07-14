@@ -294,7 +294,7 @@ router.get('/:id/events', async (req, res) => {
 
   // 1) Eventos del firmware
   const events = await db.prepare(
-    'SELECT type, detail, created_at FROM machine_events WHERE machine_id = ?'
+    "SELECT type, detail, created_at FROM machine_events WHERE machine_id = ? AND type != 'status_log'"
   ).all(id);
 
   // `reason` (heartbeatReason en el firmware): motivo del heartbeat en sí.
