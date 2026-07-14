@@ -339,7 +339,7 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
   // pedir pulsos (solo mantener el heartbeat).
   const responseData = { ok: true, machine_id: machineId, status: status ?? machine.status };
 
-  if (machine.target_fw_version && fw !== machine.target_fw_version && !otaCleared && machine.ota_url) {
+  if (machine.target_fw_version && fw !== machine.target_fw_version && !otaCleared && machine.ota_url && reason !== 'ota_start') {
     responseData.ota = {
       version: machine.target_fw_version,
       url: machine.ota_url
