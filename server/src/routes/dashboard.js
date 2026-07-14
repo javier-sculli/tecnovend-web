@@ -85,8 +85,8 @@ router.get('/summary', async (req, res) => {
 
     // 1. Obtener la lista de máquinas filtrada por organización
     const machinesQuery = orgId 
-      ? 'SELECT id, name, location, status, last_seen_at, last_rssi FROM machines WHERE client_id = ?'
-      : 'SELECT id, name, location, status, last_seen_at, last_rssi FROM machines';
+      ? 'SELECT id, name, location, status, last_seen_at, last_rssi, firmware_version FROM machines WHERE client_id = ?'
+      : 'SELECT id, name, location, status, last_seen_at, last_rssi, firmware_version FROM machines';
     const machinesParams = orgId ? [orgId] : [];
     const dbMachines = await db.prepare(machinesQuery).all(...machinesParams);
 
@@ -222,6 +222,7 @@ router.get('/summary', async (req, res) => {
       state: machineState(m),
       rssi: m.last_rssi,
       last_seen: m.last_seen_at,
+      firmware_version: m.firmware_version,
       reboots_in_period: rebootsByMachineCount[m.id] || 0
     }));
 

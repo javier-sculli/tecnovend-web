@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
@@ -335,6 +336,7 @@ function SalesChart({ chartData }) {
 
 /* ---------- Main Dashboard Component ---------- */
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [period, setPeriod] = useState("30d");
   const [envProd, setEnvProd] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -514,10 +516,11 @@ export default function Dashboard() {
                   
                   {/* Tabla de Máquinas */}
                   <div>
-                    <div className="machine head" style={{ gridTemplateColumns: '14px 1.5fr 1.2fr 1fr 1fr 14px' }}>
+                    <div className="machine head" style={{ gridTemplateColumns: '14px 1.5fr 1.2fr 0.8fr 1fr 1fr 14px' }}>
                       <span></span>
                       <span>Máquina</span>
                       <span>Sede</span>
+                      <span>Versión</span>
                       <span>Último contacto</span>
                       <span style={{ textAlign: "center" }}>Reencendidos</span>
                       <span></span>
@@ -533,7 +536,12 @@ export default function Dashboard() {
                         const isMaint = m.state === 'out_of_service';
                         
                         return (
-                          <div className="machine" key={m.id} style={{ gridTemplateColumns: '14px 1.5fr 1.2fr 1fr 1fr 14px' }}>
+                          <div 
+                            className="machine" 
+                            key={m.id} 
+                            style={{ gridTemplateColumns: '14px 1.5fr 1.2fr 0.8fr 1fr 1fr 14px', cursor: 'pointer' }}
+                            onClick={() => navigate(`/maquinas/${m.id}`)}
+                          >
                             <span className={`status-dot ${isOffline ? 'off' : isMaint ? 'warn' : 'ok'}`} title={m.state}></span>
                             
                             <div className="m-name">
@@ -543,6 +551,10 @@ export default function Dashboard() {
                             
                             <div className="m-loc">
                               <div>{m.location || 'Sin sede'}</div>
+                            </div>
+
+                            <div className="mono" style={{ fontSize: 12, color: 'var(--ink-2)' }}>
+                              {m.firmware_version || '—'}
                             </div>
                             
                             <div className="mono" style={{ fontSize: 12, color: isOffline ? '#b91c1c' : 'var(--ink-2)' }}>
