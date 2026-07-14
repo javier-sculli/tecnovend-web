@@ -372,6 +372,16 @@ router.get('/:id/events', async (req, res) => {
       out.push({ type: e.type, kind: 'ok', title: 'Solicitó configuración', desc: d.pulse_value != null ? `pulse_value $${d.pulse_value}` : '', at: e.created_at });
     } else if (e.type === 'service') {
       out.push({ type: e.type, kind: d.in_service ? 'ok' : 'warn', title: d.in_service ? 'Volvió a servicio' : 'Fuera de servicio', desc: 'reportado por la máquina', at: e.created_at });
+    } else if (e.type === 'bootloop') {
+      out.push({ type: 'service', kind: 'bad', title: 'Alerta: Reinicios continuos (Bootloop)', desc: d.desc || 'La máquina se está reiniciando de forma repetida', at: e.created_at });
+    } else if (e.type === 'ota_start') {
+      out.push({ type: 'config', kind: 'ok', title: 'Actualización Iniciada', desc: `Descargando firmware versión ${d.target_version || ''}`, at: e.created_at });
+    } else if (e.type === 'ota_success') {
+      out.push({ type: 'config', kind: 'ok', title: 'Actualización Exitosa', desc: `Firmware actualizado con éxito a versión ${d.version || ''}`, at: e.created_at });
+    } else if (e.type === 'ota_failed') {
+      out.push({ type: 'config', kind: 'bad', title: 'Actualización Fallida', desc: `Fallo al actualizar a versión ${d.target_version || ''}: ${d.error || 'error desconocido'}`, at: e.created_at });
+    } else if (e.type === 'ota_rollback') {
+      out.push({ type: 'config', kind: 'warn', title: 'Reversión de Firmware (Rollback)', desc: `Volvió a versión ${d.returned_to_version || ''} (falló versión ${d.from_version || ''})`, at: e.created_at });
     } else {
       out.push({ type: e.type, kind: 'ok', title: e.type, desc: '', at: e.created_at });
     }

@@ -314,6 +314,45 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
     reset_reason_text: typeof reset_reason_text === 'string' ? reset_reason_text : null,
   });
 
+  // Detección automática de bucle de reinicios (bootloop)
+  const isStartup = reason === 'startup';
+  const hasBadReset = reset_reason_text && ['panic', 'watchdog', 'brownout', 'interrupt_wdt', 'task_wdt'].includes(reset_reason_text);
+  
+  if (isStartup || (uptime != null && uptime < 60 && hasBadReset)) {
+    try {
+      // Buscar reinicios recientes de esta máquina en los últimos 10 minutos
+      const recentResets = await db.prepare(`
+        SELECT count(*) as count 
+        FROM machine_events 
+        WHERE machine_id = ? 
+          AND type = 'heartbeat' 
+          AND created_at > datetime('now', '-10 minutes')
+          AND (
+            (detail::json->>'reason' = 'startup') 
+            OR 
+            ((detail::json->>'uptime')::numeric < 60 AND detail::json->>'reset_reason_text' IN ('panic', 'watchdog', 'brownout', 'interrupt_wdt', 'task_wdt'))
+          )
+      `).get(machineId);
+
+      if (recentResets && recentResets.count >= 3) {
+        // Registrar evento de bucle si no alertamos hace poco (últimos 5 minutos)
+        const recentAlert = await db.prepare(`
+          SELECT id FROM machine_events 
+          WHERE machine_id = ? AND type = 'bootloop' AND created_at > datetime('now', '-5 minutes')
+        `).get(machineId);
+
+        if (!recentAlert) {
+          console.warn(`[BOOTLOOP-ALERT] La máquina ${machine.name} (${machineId}) está experimentando reinicios repetidos. reset_reason: ${reset_reason_text || 'startup'}, uptime: ${uptime || 0}s`);
+          await logEvent(machineId, 'bootloop', { 
+            desc: `La máquina se reinició ${recentResets.count + 1} veces en los últimos 10 minutos (último motivo: ${reset_reason_text || 'inicio'})`
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[bootloop-detection]', err.message);
+    }
+  }
+
   // Si se reporta un pulso afectado que falló (ej: por timeout de venta), disparamos la devolución
   if (affected_pulse_id) {
     const pulse = await db.prepare('SELECT id, status, payment_id FROM pulse_queue WHERE id = ? AND machine_id = ?')
