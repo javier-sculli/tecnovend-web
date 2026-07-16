@@ -160,26 +160,6 @@ body {
   background: var(--brand);
 }
 
-.sidebar-foot {
-  margin-top: auto;
-  border-top: 1px solid var(--line-2);
-  padding-top: 12px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 8px 4px;
-}
-.avatar {
-  width: 30px; height: 30px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #d4d4d8, #a1a1aa);
-  display: grid; place-items: center;
-  color: #fff; font-weight: 600; font-size: 12px;
-  flex-shrink: 0;
-}
-.user-meta { display: flex; flex-direction: column; min-width: 0; }
-.user-name { font-size: 13px; font-weight: 500; color: var(--ink-1); }
-.user-org { font-size: 11px; color: var(--ink-3); }
 
 /* ----- Main ----- */
 .main { display: flex; flex-direction: column; min-width: 0; }

@@ -177,13 +177,12 @@ function UserMenu() {
   }, []);
 
   if (!user) return null;
-  const initials = (user.name || user.email).split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase();
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button className="icon-btn" onClick={() => setOpen(o => !o)} title={user.email}
-        style={{ width: 30, height: 30, borderRadius: 99, fontSize: 11, fontWeight: 600 }}>
-        {initials}
+        style={{ width: 30, height: 30, borderRadius: 99 }}>
+        {Icon.user}
       </button>
       {open && (
         <div style={{ position: 'absolute', top: '120%', right: 0, zIndex: 60, minWidth: 200, background: 'var(--panel)', border: '1px solid var(--line-2)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,.12)', padding: 4 }}>

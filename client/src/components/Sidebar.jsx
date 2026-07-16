@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, Link, useLocation } from 'react-router-dom';
 import { Icon } from './Icons.jsx';
+import { apiFetch } from '../api.js';
 
 // En mobile la sidebar es un drawer (oculto por default, se abre con el botón
 // hamburguesa que dibuja este mismo componente). En desktop el CSS la deja
@@ -9,9 +10,23 @@ export default function Sidebar() {
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
+
+  // Cantidad real de máquinas del cliente activo. Antes era un "47" fijo en
+  // el código — mostraba ese número para cualquier cliente, aunque no
+  // tuviera ninguna máquina. Cambiar de cliente hace un reload completo
+  // (ver selectOrg en auth.jsx), así que alcanza con pedirlo al montar.
+  const [machineCount, setMachineCount] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/api/machines')
+      .then(data => { if (!cancelled) setMachineCount(data.length); })
+      .catch(() => { if (!cancelled) setMachineCount(null); });
+    return () => { cancelled = true; };
+  }, []);
+
   const navOps = [
     // Clientes oculto por ahora
-    { id: "maquinas",  ico: Icon.machine, label: "Máquinas",        href: "/maquinas", count: 47 },
+    { id: "maquinas",  ico: Icon.machine, label: "Máquinas",        href: "/maquinas", count: machineCount },
     { id: "pagos",     ico: Icon.card,    label: "Pagos · MP",      href: "/pagos", dot: true },
     { id: "reportes",  ico: Icon.chart,   label: "Reportes",        href: "/reportes" },
   ];
@@ -37,7 +52,7 @@ export default function Sidebar() {
           <div className="brand-mark" aria-hidden></div>
           <div>
             <div className="brand-name">VendPoint</div>
-            <div className="brand-tag">Vending OS · v1.0</div>
+            <div className="brand-tag">v1.0</div>
           </div>
         </Link>
 
@@ -77,14 +92,6 @@ export default function Sidebar() {
             <span>{n.label}</span>
           </a>
         ))}
-
-        <div className="sidebar-foot">
-          <div className="avatar">JS</div>
-          <div className="user-meta">
-            <div className="user-name">Javier Sculli</div>
-            <div className="user-org">VendPoint · Admin</div>
-          </div>
-        </div>
       </aside>
     </>
   );
