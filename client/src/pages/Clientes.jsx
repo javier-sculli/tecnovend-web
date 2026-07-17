@@ -180,7 +180,7 @@ function NewUserModal({ onClose, onCreate }) {
 /* ============================================================
    Detalle de cliente — contacto + máquinas
    ============================================================ */
-function ClientDetail({ id, onBack, onSaved }) {
+export function ClientDetail({ id, onBack, onSaved, hideBackBtn }) {
   const [client, setClient] = useState(null);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -261,7 +261,9 @@ function ClientDetail({ id, onBack, onSaved }) {
     <div className="page" data-screen-label="Cliente · Detalle">
       <div className="detail-head">
         <div>
-          <button className="back-link" onClick={onBack}>{Icon.chev} Volver a Clientes</button>
+          {!hideBackBtn && (
+            <button className="back-link" onClick={onBack}>{Icon.chev} Volver a Clientes</button>
+          )}
           <div className="detail-title-row">
             <h1 className="detail-title">{client.name}</h1>
           </div>

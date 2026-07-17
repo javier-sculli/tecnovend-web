@@ -1,9 +1,9 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './auth.jsx';
 import Login from './pages/Login.jsx';
-// Clientes oculto por ahora
 import Dashboard from './pages/Dashboard.jsx';
-// import Clientes from './pages/Clientes.jsx';
+import Clientes from './pages/Clientes.jsx';
+import Configuracion from './pages/Configuracion.jsx';
 import Maquinas from './pages/Maquinas.jsx';
 import Pagos from './pages/Pagos.jsx';
 
@@ -23,8 +23,9 @@ export default function App() {
       <Route path="/login" element={user ? <Navigate to="/maquinas" replace /> : <Login />} />
       {/* Default → Máquinas (Dashboard oculto por ahora) */}
       <Route path="/" element={<Navigate to="/maquinas" replace />} />
-      {/* <Route path="/clientes" element={<RequireAuth><Clientes /></RequireAuth>} /> */}
-      {/* <Route path="/clientes/:id" element={<RequireAuth><Clientes /></RequireAuth>} /> */}
+      <Route path="/clientes" element={<RequireAuth><Clientes /></RequireAuth>} />
+      <Route path="/clientes/:id" element={<RequireAuth><Clientes /></RequireAuth>} />
+      <Route path="/configuracion" element={<RequireAuth><Configuracion /></RequireAuth>} />
       <Route path="/maquinas" element={<RequireAuth><Maquinas /></RequireAuth>} />
       <Route path="/maquinas/:id" element={<RequireAuth><Maquinas /></RequireAuth>} />
       <Route path="/pagos" element={<RequireAuth><Pagos /></RequireAuth>} />
