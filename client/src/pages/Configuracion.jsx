@@ -27,7 +27,7 @@ export default function Configuracion() {
       <Sidebar />
       <div className="main">
         <Topbar envProd={envProd} onEnvToggle={() => setEnvProd(p => !p)} crumbs={['Sistema', 'Configuración']} />
-        <ClientDetail id={orgId} hideBackBtn={true} />
+        <ClientDetail id={orgId} hideBackBtn={true} onlyUsers={true} />
       </div>
     </div>
   );

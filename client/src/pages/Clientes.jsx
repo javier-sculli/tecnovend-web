@@ -180,7 +180,7 @@ function NewUserModal({ onClose, onCreate }) {
 /* ============================================================
    Detalle de cliente — contacto + máquinas
    ============================================================ */
-export function ClientDetail({ id, onBack, onSaved, hideBackBtn }) {
+export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
   const [client, setClient] = useState(null);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -257,6 +257,47 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn }) {
     await loadUsers();
   };
 
+  // Render para la tarjeta de usuarios
+  const renderUsersCard = () => (
+    <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Usuarios vinculados</div>
+          <div className="card-sub">Accesos autorizados a este cliente</div>
+        </div>
+        {canManageUsers && (
+          <button className="btn secondary small" onClick={() => setShowNewUser(true)}>
+            {Icon.plus} Nuevo usuario
+          </button>
+        )}
+      </div>
+
+      <div className="dev-list">
+        {loadingUsers ? (
+          <div style={{ padding: '18px', color: 'var(--ink-3)', fontSize: 13 }}>Cargando usuarios…</div>
+        ) : users.length === 0 ? (
+          <div style={{ padding: '18px', color: 'var(--ink-4)', fontSize: 13 }}>Sin usuarios creados para este cliente.</div>
+        ) : users.map(u => (
+          <div className="dev-row" key={u.id} style={{ padding: '12px 18px' }}>
+            <div className="ico qr">{Icon.user}</div>
+            <div className="name-cell">
+              <span className="n">{u.name}</span>
+              <span className="mono">{u.email}</span>
+            </div>
+            <div>
+              <span className={`spill ${u.role === 'administrador' ? 'ok' : 'normal'}`} style={{ textTransform: 'capitalize' }}>
+                {u.role === 'administrador' ? 'Admin' : 'Operador'}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', textAlign: 'right' }}>
+              {u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <div className="page" data-screen-label="Cliente · Detalle">
       <div className="detail-head">
@@ -269,110 +310,84 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn }) {
           </div>
           <div className="detail-meta">
             <span className="mono">{client.id}</span>
-            <span className="sep">·</span>
-            <span>{client.machines?.length ?? 0} máquina(s) vinculada(s)</span>
+            {!onlyUsers && (
+              <>
+                <span className="sep">·</span>
+                <span>{client.machines?.length ?? 0} máquina(s) vinculada(s)</span>
+              </>
+            )}
           </div>
         </div>
-        <div className="detail-actions">
-          <button className="btn primary" onClick={save} disabled={!dirty || saving}>
-            {Icon.check} {saving ? 'Guardando…' : 'Guardar cambios'}
-          </button>
-        </div>
+        {!onlyUsers && (
+          <div className="detail-actions">
+            <button className="btn primary" onClick={save} disabled={!dirty || saving}>
+              {Icon.check} {saving ? 'Guardando…' : 'Guardar cambios'}
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className="detail-grid">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {/* Contacto */}
+      {onlyUsers ? (
+        renderUsersCard()
+      ) : (
+        <div className="detail-grid">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {/* Contacto */}
+            <div className="card">
+              <div className="card-head">
+                <div>
+                  <div className="card-title">Contacto</div>
+                  <div className="card-sub">Datos del responsable del cliente</div>
+                </div>
+              </div>
+              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div className="form-field">
+                  <label>Nombre</label>
+                  <input value={form.contact_name || ''} onChange={e => set('contact_name', e.target.value)} />
+                </div>
+                <div className="form-field">
+                  <label>Email</label>
+                  <input type="email" value={form.contact_email || ''} onChange={e => set('contact_email', e.target.value)} />
+                </div>
+                <div className="form-field">
+                  <label>Teléfono</label>
+                  <input value={form.contact_phone || ''} onChange={e => set('contact_phone', e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            {/* Usuarios vinculados */}
+            {renderUsersCard()}
+          </div>
+
+          {/* Máquinas vinculadas */}
           <div className="card">
             <div className="card-head">
               <div>
-                <div className="card-title">Contacto</div>
-                <div className="card-sub">Datos del responsable del cliente</div>
+                <div className="card-title">Máquinas vinculadas</div>
+                <div className="card-sub">{client.machines?.length ?? 0} máquina(s)</div>
               </div>
             </div>
-            <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div className="form-field">
-                <label>Nombre</label>
-                <input value={form.contact_name || ''} onChange={e => set('contact_name', e.target.value)} />
-              </div>
-              <div className="form-field">
-                <label>Email</label>
-                <input type="email" value={form.contact_email || ''} onChange={e => set('contact_email', e.target.value)} />
-              </div>
-              <div className="form-field">
-                <label>Teléfono</label>
-                <input value={form.contact_phone || ''} onChange={e => set('contact_phone', e.target.value)} />
-              </div>
-            </div>
-          </div>
-
-          {/* Usuarios vinculados */}
-          <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div className="card-head">
-              <div>
-                <div className="card-title">Usuarios vinculados</div>
-                <div className="card-sub">Accesos autorizados a este cliente</div>
-              </div>
-              {canManageUsers && (
-                <button className="btn secondary small" onClick={() => setShowNewUser(true)}>
-                  {Icon.plus} Nuevo usuario
-                </button>
-              )}
-            </div>
-
             <div className="dev-list">
-              {loadingUsers ? (
-                <div style={{ padding: '18px', color: 'var(--ink-3)', fontSize: 13 }}>Cargando usuarios…</div>
-              ) : users.length === 0 ? (
-                <div style={{ padding: '18px', color: 'var(--ink-4)', fontSize: 13 }}>Sin usuarios creados para este cliente.</div>
-              ) : users.map(u => (
-                <div className="dev-row" key={u.id} style={{ padding: '12px 18px' }}>
-                  <div className="ico qr">{Icon.user}</div>
+              {(!client.machines || client.machines.length === 0) ? (
+                <div style={{ padding: '18px', color: 'var(--ink-4)', fontSize: 13 }}>Sin máquinas vinculadas a este cliente.</div>
+              ) : client.machines.map(m => (
+                <div className="dev-row" key={m.id}>
+                  <div className="ico point">{Icon.machine}</div>
                   <div className="name-cell">
-                    <span className="n">{u.name}</span>
-                    <span className="mono">{u.email}</span>
+                    <span className="n">{m.name}</span>
+                    <span className="mono">{m.id}</span>
                   </div>
-                  <div>
-                    <span className={`spill ${u.role === 'administrador' ? 'ok' : 'normal'}`} style={{ textTransform: 'capitalize' }}>
-                      {u.role === 'administrador' ? 'Admin' : 'Operador'}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--ink-3)', textAlign: 'right' }}>
-                    {u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}
-                  </div>
+                  <div style={{ color: 'var(--ink-2)' }}>{m.location || '—'}</div>
+                  <div></div>
+                  <div><span className={'spill ' + (m.status === 'active' ? 'ok' : 'warn')}>{m.status}</span></div>
+                  <div></div>
                 </div>
               ))}
             </div>
           </div>
         </div>
-
-        {/* Máquinas vinculadas */}
-        <div className="card">
-          <div className="card-head">
-            <div>
-              <div className="card-title">Máquinas vinculadas</div>
-              <div className="card-sub">{client.machines?.length ?? 0} máquina(s)</div>
-            </div>
-          </div>
-          <div className="dev-list">
-            {(!client.machines || client.machines.length === 0) ? (
-              <div style={{ padding: '18px', color: 'var(--ink-4)', fontSize: 13 }}>Sin máquinas vinculadas a este cliente.</div>
-            ) : client.machines.map(m => (
-              <div className="dev-row" key={m.id}>
-                <div className="ico point">{Icon.machine}</div>
-                <div className="name-cell">
-                  <span className="n">{m.name}</span>
-                  <span className="mono">{m.id}</span>
-                </div>
-                <div style={{ color: 'var(--ink-2)' }}>{m.location || '—'}</div>
-                <div></div>
-                <div><span className={'spill ' + (m.status === 'active' ? 'ok' : 'warn')}>{m.status}</span></div>
-                <div></div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      )}
 
       {showNewUser && <NewUserModal onClose={() => setShowNewUser(false)} onCreate={createUser} />}
     </div>
