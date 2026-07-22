@@ -33,7 +33,7 @@ export async function setStoredToken(clientId, { token, refreshToken, expiresIn,
     clientId,
     token,
     refreshToken ?? null,
-    expiresIn ? String(Date.now() + expiresIn * 1000) : null,
+    expiresIn ? new Date(Date.now() + expiresIn * 1000) : null,
     mpUserId != null ? String(mpUserId) : null,
   );
   _userIdCache.delete(tokenKey(clientId));
@@ -300,26 +300,36 @@ const DEFAULT_STORE_EXT_ID = 'tv_default';
 const DEFAULT_STORE_NAME = 'VendPoint';
 
 // Devuelve el local default de la cuenta del cliente, creándolo si no existe.
-// El local siempre vive en la cuenta de MP del cliente (clientId).
+// Prioriza stores existentes en la cuenta MP del cliente para no duplicar locales.
 export async function ensureDefaultStore(clientId) {
-  const find = async () =>
-    (await getStores(clientId)).find(s => String(s.external_id) === DEFAULT_STORE_EXT_ID) || null;
+  const stores = await getStores(clientId);
+  if (!stores || stores.length === 0) {
+    // Si no hay ningún local en MP, creamos uno usando el nombre del cliente
+    let storeName = DEFAULT_STORE_NAME;
+    if (clientId) {
+      const clientRow = await db.prepare('SELECT name FROM clients WHERE id = ?').get(clientId);
+      if (clientRow?.name) storeName = `${clientRow.name}`;
+    }
 
-  const existing = await find();
-  if (existing) return existing;
-
-  try {
-    return await createStore({
-      externalId: DEFAULT_STORE_EXT_ID,
-      name: DEFAULT_STORE_NAME,
-      address: 'Av. Mitre 750',
-    }, clientId);
-  } catch (e) {
-    // Carrera, o ya existía pero no vino en el listado: reintentar buscarlo.
-    const retry = await find();
-    if (retry) return retry;
-    throw e;
+    try {
+      return await createStore({
+        externalId: DEFAULT_STORE_EXT_ID,
+        name: storeName,
+        address: 'Av. Mitre 750',
+      }, clientId);
+    } catch (e) {
+      const retry = await getStores(clientId);
+      if (retry && retry.length > 0) return retry[0];
+      throw e;
+    }
   }
+
+  // Si ya tiene un store con external_id 'tv_default', priorizarlo
+  const tvDefault = stores.find(s => String(s.external_id) === DEFAULT_STORE_EXT_ID);
+  if (tvDefault) return tvDefault;
+
+  // Si el cliente ya tiene locales propios creados en MP, reutilizamos el primero
+  return stores[0];
 }
 
 // Crea (o reutiliza) la caja QR de la máquina dentro del local default de su

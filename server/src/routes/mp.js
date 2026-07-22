@@ -9,9 +9,8 @@ const router = Router();
 
 // ─── OAuth ───────────────────────────────────────────────────────────────────
 
-// El cliente/organización dueño de la conexión MP: lo manda el front en x-org-id
-// (o ?org= en el arranque del OAuth, que es una navegación de página completa).
-const orgOf = (req) => req.query.org || req.headers['x-org-id'] || null;
+// El cliente/organización dueño de la conexión MP: lo manda el front en ?clientId=, ?org= o x-org-id.
+const orgOf = (req) => req.query.clientId || req.query.org || req.headers['x-org-id'] || null;
 
 // GET /api/mp/auth?org=<clientId> — inicia el OAuth para conectar la cuenta MP
 // de ESE cliente. El local y las cajas van a vivir en su cuenta.
@@ -22,13 +21,13 @@ router.get('/auth', async (req, res) => {
   const org = orgOf(req);
   if (!org) return res.status(400).send('Faltó el cliente (org) que conecta Mercado Pago.');
 
-  const redirectUri = `${req.protocol}://${req.get('host')}/api/mp/auth/callback`;
+  const redirectUri = process.env.MP_REDIRECT_URI || `${process.env.NODE_ENV === 'production' ? 'https' : req.protocol}://${req.get('host')}/api/mp/auth/callback`;
   const state = crypto.randomBytes(16).toString('hex');
   // Guardar state + el cliente que conecta, para recuperarlos en el callback.
+  const stateKey = `oauth_state_${state}`;
   const upsert = db.prepare(`INSERT INTO config (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`);
-  await upsert.run('oauth_state', state);
-  await upsert.run('oauth_state_org', org);
+  await upsert.run(stateKey, org);
 
   const url = new URL('https://auth.mercadopago.com/authorization');
   url.searchParams.set('client_id', mpAppClientId);
@@ -43,20 +42,17 @@ router.get('/auth', async (req, res) => {
 // GET /api/mp/auth/callback — MP redirige acá con el code
 router.get('/auth/callback', async (req, res) => {
   const { code, state } = req.query;
-  if (!code) return res.status(400).send('Faltó el código de autorización de MP.');
+  if (!code || !state) return res.status(400).send('Faltó el código de autorización o state de MP.');
 
   // Verificar state y recuperar el cliente que inició la conexión.
-  const savedState = await db.prepare('SELECT value FROM config WHERE key = ?').get('oauth_state');
-  if (!savedState || savedState.value !== state) {
-    return res.status(400).send('State inválido — posible ataque CSRF.');
-  }
-  const orgRow = await db.prepare('SELECT value FROM config WHERE key = ?').get('oauth_state_org');
+  const stateKey = `oauth_state_${state}`;
+  const orgRow = await db.prepare('SELECT value FROM config WHERE key = ?').get(stateKey);
   const org = orgRow?.value || null;
-  if (!org) return res.status(400).send('No se pudo determinar el cliente de la conexión.');
+  if (!org) return res.status(400).send('State inválido o expirado — no se pudo determinar el cliente de la conexión.');
 
   const mpAppClientId = process.env.MP_CLIENT_ID;
   const clientSecret = process.env.MP_CLIENT_SECRET;
-  const redirectUri = `${req.protocol}://${req.get('host')}/api/mp/auth/callback`;
+  const redirectUri = process.env.MP_REDIRECT_URI || `${process.env.NODE_ENV === 'production' ? 'https' : req.protocol}://${req.get('host')}/api/mp/auth/callback`;
 
   try {
     const tokenRes = await fetch('https://api.mercadopago.com/oauth/token', {
@@ -81,10 +77,8 @@ router.get('/auth/callback', async (req, res) => {
     });
     console.log(`[oauth] ✓ cuenta MP user_id ${data.user_id} conectada al cliente ${org}`);
 
-    // Limpiar el state de un solo uso + el token global legacy: ya no hay
-    // fallback, cada cliente usa exclusivamente su propia cuenta conectada.
-    await db.prepare(`DELETE FROM config WHERE key IN
-      ('oauth_state', 'oauth_state_org', 'mp_access_token', 'mp_refresh_token', 'mp_token_expires_at')`).run();
+    // Limpiar el state de un solo uso
+    await db.prepare('DELETE FROM config WHERE key = ?').run(stateKey);
 
     res.redirect('/?mp_connected=1');
   } catch (e) {

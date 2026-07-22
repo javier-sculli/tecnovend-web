@@ -86,7 +86,7 @@ function Channels5({ channels }) {
 }
 
 /* ---------- Machine List View ---------- */
-function MachineList({ machines, onOpen, onNew, clientsById = {} }) {
+function MachineList({ machines, onOpen, onNew }) {
   const [tab, setTab] = useState("all");
   const [query, setQuery] = useState("");
   const [view, setView] = useState("table");
@@ -170,9 +170,9 @@ function MachineList({ machines, onOpen, onNew, clientsById = {} }) {
         <div className="mlist-row head">
           <span>Estado</span>
           <span>Máquina</span>
-          <span>Cliente</span>
           <span>Sede</span>
-          <span>Tageo MP</span>
+          <span>Uptime</span>
+          <span>Versión Arduino</span>
           <span style={{ textAlign: "right" }}>Pagos · última semana</span>
           <span></span>
         </div>
@@ -186,28 +186,14 @@ function MachineList({ machines, onOpen, onNew, clientsById = {} }) {
                 <span className="id">{m.id} · {m.model}</span>
               </div>
               <div className="mloc">
-                {m.client_id && clientsById[m.client_id]
-                  ? <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--ink-2)" }}>
-                      <span style={{ color: "var(--ink-4)", display: "inline-flex" }}>{Icon.building}</span>
-                      {clientsById[m.client_id]}
-                    </span>
-                  : <span style={{ color: "var(--ink-4)" }}>sin cliente</span>}
-              </div>
-              <div className="mloc">
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                   <span style={{ color: "var(--ink-4)", display: "inline-flex" }}>{Icon.pin}</span>
                   {m.location}
                 </div>
                 <div className="sub">{m.address}</div>
               </div>
-              <div className="tag-stack">
-                {/* Point oculto hasta tener los posnet físicos (Fase 2) */}
-                {m.pos_id ? (
-                  <span className="tag qr">{Icon.qr} {m.pos_id}</span>
-                ) : (
-                  <span className="tag empty">{Icon.qr} sin QR</span>
-                )}
-              </div>
+              <div className="mono" style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{fmtUptime(m.last_uptime)}</div>
+              <div className="mono" style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{m.firmware_version || "—"}</div>
               <div className="metric-right">
                 {m.payments_week
                   ? `${num(m.payments_week)} pago${m.payments_week !== 1 ? "s" : ""}`
@@ -908,15 +894,16 @@ function TageoCard({ m, onRefresh }) {
 
   const open = async (which) => {
     setErr(''); setMode(which);
+    const clientParam = m.client_id ? `?clientId=${m.client_id}` : '';
     if (which === 'store' && !stores) {
       setBusy(true);
-      try { setStores(await apiFetch('/api/mp/stores')); }
+      try { setStores(await apiFetch(`/api/mp/stores${clientParam}`)); }
       catch (e) { setErr(e.message); }
       finally { setBusy(false); }
     }
     if (which === 'qr' && !allPos) {
       setBusy(true);
-      try { setAllPos(await apiFetch('/api/mp/pos')); }
+      try { setAllPos(await apiFetch(`/api/mp/pos${clientParam}`)); }
       catch (e) { setErr(e.message); }
       finally { setBusy(false); }
     }
@@ -1697,16 +1684,10 @@ export default function Maquinas() {
   const { orgId } = useAuth();
 
   const [machines, setMachines] = useState([]);
-  const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [envProd, setEnvProd] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
   const [showConnectMP, setShowConnectMP] = useState(false);
-
-  const clientsById = useMemo(
-    () => Object.fromEntries(clients.map(c => [c.id, c.name])),
-    [clients],
-  );
 
   useEffect(() => {
     let active = true;
@@ -1717,14 +1698,6 @@ export default function Maquinas() {
     load();
     const t = setInterval(load, 60000);
     return () => { active = false; clearInterval(t); };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/clients')
-      .then(data => { if (active) setClients(data); })
-      .catch(() => {});
-    return () => { active = false; };
   }, []);
 
   const addMachine = async (newMachine) => {
@@ -1815,7 +1788,6 @@ export default function Maquinas() {
         ) : (
           <MachineList
             machines={machines}
-            clientsById={clientsById}
             onOpen={(mid) => navigate(`/maquinas/${mid}`)}
             onNew={handleNew}
           />

@@ -191,7 +191,7 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [showNewUser, setShowNewUser] = useState(false);
 
-  const { orgs } = useAuth();
+  const { orgs, user: currentUser } = useAuth();
   const isSuperAdmin = orgs.some(o => o.id === 'cli_87c461' && o.role === 'administrador');
   const myRoleInThisOrg = orgs.find(o => o.id === id)?.role;
   const canManageUsers = isSuperAdmin || myRoleInThisOrg === 'administrador';
@@ -257,6 +257,20 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
     await loadUsers();
   };
 
+  const deleteUser = async (u) => {
+    if (currentUser?.id === u.id) {
+      alert('No podés eliminar tu propia cuenta');
+      return;
+    }
+    if (!confirm(`¿Estás seguro de eliminar a "${u.name}" (${u.email}) de este cliente?`)) return;
+    try {
+      await apiFetch(`/api/clients/${id}/users/${u.id}`, { method: 'DELETE' });
+      await loadUsers();
+    } catch (e) {
+      alert('Error al eliminar usuario: ' + e.message);
+    }
+  };
+
   // Render para la tarjeta de usuarios
   const renderUsersCard = () => (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -289,8 +303,20 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
                 {u.role === 'administrador' ? 'Admin' : 'Operador'}
               </span>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', textAlign: 'right' }}>
-              {u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                {u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}
+              </span>
+              {canManageUsers && currentUser?.id !== u.id && (
+                <button
+                  className="link-btn"
+                  title="Eliminar usuario de este cliente"
+                  onClick={() => deleteUser(u)}
+                  style={{ color: 'var(--bad)', marginLeft: 8, padding: '2px 4px' }}
+                >
+                  {Icon.trash}
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -332,26 +358,30 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
       ) : (
         <div className="detail-grid">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {/* Contacto */}
+            {/* Datos del cliente */}
             <div className="card">
               <div className="card-head">
                 <div>
-                  <div className="card-title">Contacto</div>
-                  <div className="card-sub">Datos del responsable del cliente</div>
+                  <div className="card-title">Datos del cliente</div>
+                  <div className="card-sub">Nombre de la organización y datos de contacto</div>
                 </div>
               </div>
               <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div className="form-field">
-                  <label>Nombre</label>
-                  <input value={form.contact_name || ''} onChange={e => set('contact_name', e.target.value)} />
+                  <label>Nombre del cliente <span className="req">*</span></label>
+                  <input value={form.name || ''} onChange={e => set('name', e.target.value)} placeholder="Ej: Kiosco Córdoba" />
                 </div>
                 <div className="form-field">
-                  <label>Email</label>
-                  <input type="email" value={form.contact_email || ''} onChange={e => set('contact_email', e.target.value)} />
+                  <label>Persona de contacto</label>
+                  <input value={form.contact_name || ''} onChange={e => set('contact_name', e.target.value)} placeholder="Nombre del responsable" />
                 </div>
                 <div className="form-field">
-                  <label>Teléfono</label>
-                  <input value={form.contact_phone || ''} onChange={e => set('contact_phone', e.target.value)} />
+                  <label>Email de contacto</label>
+                  <input type="email" value={form.contact_email || ''} onChange={e => set('contact_email', e.target.value)} placeholder="contacto@cliente.com" />
+                </div>
+                <div className="form-field">
+                  <label>Teléfono de contacto</label>
+                  <input value={form.contact_phone || ''} onChange={e => set('contact_phone', e.target.value)} placeholder="Ej: +54 9 11..." />
                 </div>
               </div>
             </div>

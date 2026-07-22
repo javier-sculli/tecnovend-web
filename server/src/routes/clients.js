@@ -205,4 +205,37 @@ router.post('/:id/users', requireAuth, async (req, res) => {
   res.status(201).json({ id: userId, email: cleanEmail });
 });
 
+// DELETE /api/clients/:id/users/:userId (eliminar usuario/membresía de un cliente)
+router.delete('/:id/users/:userId', requireAuth, async (req, res) => {
+  const clientId = req.params.id;
+  const targetUserId = req.params.userId;
+  const isSuper = await isSuperAdminUser(req.user.id);
+
+  if (!isSuper) {
+    const userRole = await db.prepare(`
+      SELECT role FROM memberships WHERE user_id = ? AND client_id = ?
+    `).get(req.user.id, clientId);
+    if (!userRole || userRole.role !== 'administrador') {
+      return res.status(403).json({ error: 'No tenés permisos para eliminar usuarios de este cliente' });
+    }
+  }
+
+  // No permitir eliminar la propia cuenta activa
+  if (req.user.id === targetUserId) {
+    return res.status(400).json({ error: 'No podés eliminar tu propia cuenta' });
+  }
+
+  // Eliminar la membresía del cliente
+  await db.prepare('DELETE FROM memberships WHERE user_id = ? AND client_id = ?')
+    .run(targetUserId, clientId);
+
+  // Si el usuario ya no pertenece a ninguna organización, eliminar también su cuenta de usuario
+  const remainingMem = await db.prepare('SELECT 1 FROM memberships WHERE user_id = ?').get(targetUserId);
+  if (!remainingMem) {
+    await db.prepare('DELETE FROM users WHERE id = ?').run(targetUserId);
+  }
+
+  res.json({ ok: true });
+});
+
 export default router;
