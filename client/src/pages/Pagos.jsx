@@ -288,7 +288,8 @@ function ConnectedState({ status, onDisconnect }) {
               {/* Vinculadas a máquinas (activas) primero */}
               {[...pos].sort((a, b) => (machineForPos(b) ? 1 : 0) - (machineForPos(a) ? 1 : 0)).map(p => {
                 const m = machineForPos(p);
-                const store = stores.find(s => String(s.id) === String(p.store_id));
+                const store = stores.find(s => String(s.id) === String(p.store_id)) || (m?.mp_store_id ? stores.find(s => String(s.id) === String(m.mp_store_id)) : null);
+                const storeDisplayName = store?.name || m?.mp_store_name || (p.store_id ? `Local ${p.store_id}` : '—');
                 return (
                   <div className="dev-row" key={p.id}>
                     <div className="ico qr">{Icon.qr}</div>
@@ -296,7 +297,7 @@ function ConnectedState({ status, onDisconnect }) {
                       <span className="n">{p.name || 'Caja QR'}</span>
                       <span className="mono">{p.external_id || p.id}</span>
                     </div>
-                    <div style={{ color: "var(--ink-2)" }}>{store?.name || (p.store_id ? `Local ${p.store_id}` : '—')}</div>
+                    <div style={{ color: "var(--ink-2)" }}>{storeDisplayName}</div>
                     <div>
                       {m ? (
                         <span className="machine-tag">{Icon.machine}{m.id}</span>
