@@ -1053,9 +1053,94 @@ function TageoCard({ m, onRefresh }) {
   );
 }
 
+/* ---------- Reassign Client Card (Super Admin) ---------- */
+function ReassignClientCard({ m, onRefresh }) {
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedClientId, setSelectedClientId] = useState(m.client_id || '');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    apiFetch('/api/clients')
+      .then(data => setClients(data))
+      .catch(e => console.error(e))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleReassign = async () => {
+    const targetClient = clients.find(c => c.id === selectedClientId);
+    const targetName = targetClient ? targetClient.name : 'Sin cliente';
+    if (!confirm(`¿Reasignar la máquina "${m.name}" (${m.id}) al cliente "${targetName}"?`)) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/api/machines/${m.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ client_id: selectedClientId || null })
+      });
+      await onRefresh();
+      alert(`Máquina "${m.name}" reasignada con éxito a "${targetName}".`);
+    } catch (e) {
+      alert('Error al reasignar máquina: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Reasignar Cliente (Super Admin)</div>
+          <div className="card-sub">Mover esta máquina a otra organización u operador</div>
+        </div>
+      </div>
+      <div className="card-body" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        {loading ? (
+          <span style={{ fontSize: 13, color: 'var(--ink-4)' }}>Cargando lista de clientes…</span>
+        ) : (
+          <>
+            <select
+              value={selectedClientId}
+              onChange={e => setSelectedClientId(e.target.value)}
+              disabled={busy}
+              style={{
+                flex: 1,
+                minWidth: 240,
+                padding: '8px 12px',
+                borderRadius: 'var(--radius)',
+                border: '1px solid var(--border)',
+                background: 'var(--bg-card)',
+                color: 'var(--ink-1)',
+                fontSize: 13,
+              }}
+            >
+              <option value="">-- Sin cliente asignado --</option>
+              {clients.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.id})
+                </option>
+              ))}
+            </select>
+            <button
+              className="btn primary"
+              onClick={handleReassign}
+              disabled={busy || selectedClientId === (m.client_id || '')}
+            >
+              {busy ? 'Guardando…' : 'Mover máquina de cliente'}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Machine Detail View ---------- */
 function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDelete }) {
   const m = useMemo(() => machines.find(x => x.id === id) || machines[0], [machines, id]);
+
+  const { orgs } = useAuth();
+  const isSuperAdmin = orgs?.some(o => o.id === 'cli_87c461' && o.role === 'administrador');
 
   const [editMode, setEditMode] = useState(false);
   const [pulseValue, setPulseValue] = useState(m?.pulse_value);
@@ -1256,7 +1341,11 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
         <button className={tab === "pagos" ? "on" : ""} onClick={() => setTab("pagos")}>Pagos</button>
         <button className={tab === "pulsos" ? "on" : ""} onClick={() => setTab("pulsos")}>Pulsos</button>
         <button className={tab === "eventos" ? "on" : ""} onClick={() => setTab("eventos")}>Eventos</button>
-        <button className={tab === "diagnostico" ? "on" : ""} onClick={() => setTab("diagnostico")}>Diagnóstico</button>
+        {isSuperAdmin ? (
+          <button className={tab === "admin" ? "on" : ""} onClick={() => setTab("admin")}>Admin</button>
+        ) : (
+          <button className={tab === "diagnostico" ? "on" : ""} onClick={() => setTab("diagnostico")}>Diagnóstico</button>
+        )}
       </div>
 
       {tab === "pagos" && (
@@ -1271,7 +1360,14 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
 
       {tab === "eventos" && <EventsCard machineId={m.id} />}
 
-      {tab === "diagnostico" && <DiagnosticsCard machineId={m.id} />}
+      {tab === "diagnostico" && !isSuperAdmin && <DiagnosticsCard machineId={m.id} />}
+
+      {tab === "admin" && isSuperAdmin && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <ReassignClientCard m={m} onRefresh={onRefresh} />
+          <DiagnosticsCard machineId={m.id} />
+        </div>
+      )}
 
       {tab === "config" && (
       <div className="detail-grid">

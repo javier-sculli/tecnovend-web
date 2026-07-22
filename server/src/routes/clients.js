@@ -238,4 +238,32 @@ router.delete('/:id/users/:userId', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/clients/:id (eliminar cliente completo - SOLO Super Admin)
+router.delete('/:id', requireAuth, async (req, res) => {
+  const clientId = req.params.id;
+  const isSuper = await isSuperAdminUser(req.user.id);
+
+  if (!isSuper) {
+    return res.status(403).json({ error: 'No tenés permisos de Super Admin para eliminar clientes' });
+  }
+
+  if (clientId === 'cli_87c461') {
+    return res.status(400).json({ error: 'No se puede eliminar la organización principal Tecnovend' });
+  }
+
+  const client = await db.prepare('SELECT id, name FROM clients WHERE id = ?').get(clientId);
+  if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
+
+  // Desvincular máquinas asociadas
+  await db.prepare('UPDATE machines SET client_id = NULL WHERE client_id = ?').run(clientId);
+  // Eliminar membresías
+  await db.prepare('DELETE FROM memberships WHERE client_id = ?').run(clientId);
+  // Eliminar conexión MP si la hubiera
+  await db.prepare('DELETE FROM mp_connections WHERE client_id = ?').run(clientId);
+  // Eliminar cliente
+  await db.prepare('DELETE FROM clients WHERE id = ?').run(clientId);
+
+  res.json({ ok: true });
+});
+
 export default router;

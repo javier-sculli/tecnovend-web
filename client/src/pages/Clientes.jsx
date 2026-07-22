@@ -324,6 +324,20 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
     </div>
   );
 
+  const deleteClient = async () => {
+    if (!confirm(`¿Estás seguro de eliminar el cliente "${client.name}" (${client.id})?\n\nEsta acción borrará la organización, desvinculará sus máquinas y accesos. No se puede deshacer.`)) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/api/clients/${id}`, { method: 'DELETE' });
+      alert(`Cliente "${client.name}" eliminado.`);
+      onBack ? onBack() : onSaved?.();
+    } catch (e) {
+      alert('Error al eliminar cliente: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="page" data-screen-label="Cliente · Detalle">
       <div className="detail-head">
@@ -345,10 +359,15 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
           </div>
         </div>
         {!onlyUsers && (
-          <div className="detail-actions">
+          <div className="detail-actions" style={{ display: 'flex', gap: 8 }}>
             <button className="btn primary" onClick={save} disabled={!dirty || saving}>
               {Icon.check} {saving ? 'Guardando…' : 'Guardar cambios'}
             </button>
+            {isSuperAdmin && id !== 'cli_87c461' && (
+              <button className="danger" onClick={deleteClient} disabled={saving} title="Eliminar cliente completo">
+                {Icon.trash} Eliminar cliente
+              </button>
+            )}
           </div>
         )}
       </div>
