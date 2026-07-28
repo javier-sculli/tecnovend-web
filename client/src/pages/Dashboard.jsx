@@ -477,7 +477,7 @@ export default function Dashboard() {
             <div style={{ opacity: loading ? 0.6 : 1, transition: 'opacity 0.2s' }}>
               
               {/* KPIs Principales Comerciales */}
-              <div className="kpi-row" style={{ gridTemplateColumns: 'repeat(3, 1fr)', marginBottom: 14 }}>
+              <div className="kpi-row" style={{ gridTemplateColumns: 'repeat(2, 1fr)', marginBottom: 14 }}>
                 <KPI
                   label="Ventas Acumuladas"
                   ico={Icon.coin}
@@ -489,13 +489,6 @@ export default function Dashboard() {
                   ico={Icon.card}
                   value={`${num(data.kpis.total_payments)} transacciones`}
                   note="Cobros validados correctamente"
-                />
-                <KPI
-                  label="Reembolsos por Falla"
-                  ico={Icon.clock}
-                  value={ars(data.kpis.total_refunded)}
-                  note={`${num(data.kpis.total_refund_count)} devoluciones automáticas`}
-                  colorClass={data.kpis.total_refunded > 0 ? "warn-kpi" : ""}
                 />
               </div>
 
