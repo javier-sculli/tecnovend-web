@@ -7,8 +7,8 @@ import { apiFetch, API_BASE } from '../api.js';
 import { useAuth } from '../auth.jsx';
 
 /* ---------- Helpers ---------- */
-const ars = (n) => "$" + n.toLocaleString("es-AR", { maximumFractionDigits: 0 });
-const num = (n) => n.toLocaleString("es-AR");
+const ars = (n) => "$" + (Number(n) || 0).toLocaleString("es-AR", { maximumFractionDigits: 0 });
+const num = (n) => (Number(n) || 0).toLocaleString("es-AR");
 
 // Tiempo relativo desde un timestamp UTC ('YYYY-MM-DD HH:MM:SS' o ISO)
 const timeAgo = (ts) => {
@@ -75,7 +75,8 @@ const statusMeta = {
 };
 
 /* ---------- Subcomponents ---------- */
-function Channels5({ channels }) {
+function MiniChannels({ config = [] }) {
+  const channels = Array.isArray(config) ? config : [];
   return (
     <div className="channels-mini" title={`${channels.filter(Boolean).length} de 5 canales configurados`}>
       {[0,1,2,3,4].map(i => (
@@ -117,7 +118,7 @@ function MachineList({ machines, onOpen, onNew }) {
     return r;
   }, [tab, query, machines]);
 
-  const totalRev30 = useMemo(() => machines.reduce((s, m) => s + m.rev30, 0), [machines]);
+  const totalToday = useMemo(() => machines.reduce((s, m) => s + (Number(m.today_total) || 0), 0), [machines]);
 
   return (
     <div className="page" data-screen-label="01 Máquinas · Lista">
@@ -130,7 +131,7 @@ function MachineList({ machines, onOpen, onNew }) {
             <span className="chip warn"><span className="d"></span><strong>{STATUS_FILTERS[2].count}</strong> mant.</span>
             <span className="chip bad"><span className="d"></span><strong>{STATUS_FILTERS[3].count}</strong> inactivas</span>
             <span className="chip"><strong>{STATUS_FILTERS[4].count}</strong> sin tagear</span>
-            <span className="chip"><strong>{ars(totalRev30)}</strong> · 30 d</span>
+            <span className="chip ok"><strong>{ars(totalToday)}</strong> · hoy</span>
           </div>
         </div>
         <div className="head-controls">
@@ -172,7 +173,8 @@ function MachineList({ machines, onOpen, onNew }) {
           <span>Máquina</span>
           <span>Sede</span>
           <span>Uptime</span>
-          <span>Versión Arduino</span>
+          <span>Versión FW</span>
+          <span style={{ textAlign: "right" }}>Ventas hoy</span>
           <span style={{ textAlign: "right" }}>Pagos · última semana</span>
           <span></span>
         </div>
@@ -194,6 +196,10 @@ function MachineList({ machines, onOpen, onNew }) {
               </div>
               <div className="mono" style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{fmtUptime(m.last_uptime)}</div>
               <div className="mono" style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{m.firmware_version || "—"}</div>
+              <div className="metric-right">
+                <div style={{ fontWeight: 600, color: "var(--ink-1)" }}>{ars(m.today_total || 0)}</div>
+                <div className="sub">{m.today_count ? `${m.today_count} cobro${m.today_count !== 1 ? 's' : ''}` : "sin ventas"}</div>
+              </div>
               <div className="metric-right">
                 {m.payments_week
                   ? `${num(m.payments_week)} pago${m.payments_week !== 1 ? "s" : ""}`
@@ -548,8 +554,8 @@ function DiagnosticsCard({ machineId }) {
                   <span className="mono" style={{ fontSize: '11px', color: 'var(--ink-2)' }}>
                     {fmtUptime(d.uptime) !== '—' ? `${Math.round((d.free_heap || 0) / 1024)} KB` : '—'}
                   </span>
-                  <span className="mono" style={{ fontSize: '11px', fontWeight: (isBadReset && d.uptime < 120) ? 'bold' : 'normal', color: d.uptime < 120 ? getResetReasonColor(d.reset_reason_text) : 'var(--ink-4)' }}>
-                    {d.uptime < 120 ? (d.reset_reason_text || '—') : '—'}
+                  <span className="mono" style={{ fontSize: '11px', fontWeight: (isBadReset && d.reason === 'startup') ? 'bold' : 'normal', color: d.reason === 'startup' ? getResetReasonColor(d.reset_reason_text) : 'var(--ink-4)' }}>
+                    {d.reason === 'startup' ? (d.reset_reason_text || '—') : '—'}
                   </span>
                 </div>
                 {isExpanded && (
@@ -633,8 +639,8 @@ function DiagnosticsCard({ machineId }) {
                       </div>
                       <div>
                         <strong style={{ color: 'var(--ink-3)' }}>Motivo de Reinicio:</strong>{' '}
-                        <span className="mono" style={{ fontWeight: isBadReset ? 'bold' : 'normal', color: getResetReasonColor(d.reset_reason_text) }}>
-                          {d.reset_reason_text ? `${d.reset_reason_text} (${d.reset_reason})` : '—'}
+                        <span className="mono" style={{ fontWeight: (isBadReset && d.reason === 'startup') ? 'bold' : 'normal', color: d.reason === 'startup' ? getResetReasonColor(d.reset_reason_text) : 'var(--ink-4)' }}>
+                          {d.reason === 'startup' ? (d.reset_reason_text ? `${d.reset_reason_text} (${d.reset_reason})` : '—') : '—'}
                         </span>
                       </div>
                       <div>
@@ -1135,6 +1141,203 @@ function ReassignClientCard({ m, onRefresh }) {
   );
 }
 
+/* ---------- Firmware & Polling Card Component ---------- */
+function FirmwarePollingCard({ m, onUpdateMachine }) {
+  const [targetFwVersion, setTargetFwVersion] = useState(m?.target_fw_version ?? "");
+  const [arduinoId, setArduinoId] = useState(m?.arduino_id ?? "");
+  const [editingSerial, setEditingSerial] = useState(false);
+  const [availableReleases, setAvailableReleases] = useState([]);
+  const [customFwMode, setCustomFwMode] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (m) {
+      setTargetFwVersion(m.target_fw_version ?? "");
+      setArduinoId(m.arduino_id ?? "");
+    }
+  }, [m]);
+
+  useEffect(() => {
+    apiFetch('/api/firmware/releases')
+      .then(data => {
+        if (data?.releases) setAvailableReleases(data.releases);
+      })
+      .catch(() => {});
+  }, []);
+
+  const currentCleanTarget = (m?.target_fw_version ?? "").trim().replace(/^v/i, '');
+  const selectedCleanTarget = targetFwVersion.trim().replace(/^v/i, '');
+  const hasTargetChanged = selectedCleanTarget !== currentCleanTarget;
+
+  const handleProgramOta = async () => {
+    const cleanVersion = selectedCleanTarget;
+    const selectedRel = availableReleases.find(r => r.version === cleanVersion);
+    const generatedOtaUrl = cleanVersion 
+      ? (selectedRel?.ota_url || `https://github.com/tecnovend/tecnovend-arduino/releases/download/v${cleanVersion}/firmware-vv${cleanVersion}.bin`)
+      : null;
+
+    if (cleanVersion !== "") {
+      const confirmUpdate = window.confirm(
+        `¿Estás seguro de programar la actualización a la versión v${cleanVersion}?\n\nLa máquina descargará e instalará esta versión en su próximo ciclo de conexión.`
+      );
+      if (!confirmUpdate) return;
+    }
+
+    setBusy(true);
+    try {
+      await onUpdateMachine(m.id, {
+        target_fw_version: cleanVersion || null,
+        ota_url: generatedOtaUrl,
+        arduino_id: arduinoId.trim() || null,
+      });
+      setEditingSerial(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <div className="card-title">Firmware & Polling</div>
+          <div className="card-sub">Arduino, versión reportada y actualización OTA</div>
+        </div>
+      </div>
+      <div className="card-body">
+        <div className="kv">
+          <span className="k">Serial de placa <span style={{ color: "var(--ink-4)", fontWeight: 400 }}>· ID Arduino</span></span>
+          <div className="v v-edit">
+            {editingSerial ? (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={arduinoId}
+                  onChange={(e) => setArduinoId(e.target.value)}
+                  placeholder="ej: 3C71BF4A2B08"
+                  className="mono"
+                  style={{ border: "1px solid var(--line-active)", background: "var(--bg-2)" }}
+                />
+                <button className="btn primary" onClick={handleProgramOta} disabled={busy} style={{ fontSize: 11 }}>
+                  Guardar
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span className="mono">{m.arduino_id || "—"}</span>
+                <button className="link-btn" onClick={() => setEditingSerial(true)} style={{ fontSize: 11 }}>
+                  editar
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="kv">
+          <span className="k">Versión Actual</span>
+          <div className="v mono" style={{ fontWeight: 600 }}>
+            {m.firmware_version || m.firmware || "—"}
+          </div>
+        </div>
+
+        <div className="kv">
+          <span className="k">Versión Destino (OTA)</span>
+          <div className="v v-edit" style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>
+            {customFwMode ? (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', width: '100%' }}>
+                <input
+                  type="text"
+                  value={targetFwVersion}
+                  onChange={(e) => setTargetFwVersion(e.target.value)}
+                  placeholder="Ej: 0.0.3"
+                  style={{ border: "1px solid var(--line-active)", background: "var(--bg-2)", flex: 1 }}
+                />
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => setCustomFwMode(false)}
+                  style={{ fontSize: 11, whiteSpace: 'nowrap' }}
+                >
+                  ver lista
+                </button>
+              </div>
+            ) : (
+              <select
+                value={selectedCleanTarget}
+                onChange={(e) => {
+                  if (e.target.value === '__custom__') {
+                    setCustomFwMode(true);
+                  } else {
+                    setTargetFwVersion(e.target.value);
+                  }
+                }}
+                disabled={busy}
+                style={{
+                  border: "1px solid var(--line-active)",
+                  background: "var(--bg-2)",
+                  padding: "6px 8px",
+                  borderRadius: 6,
+                  color: "var(--ink-1)",
+                  fontSize: 13,
+                  width: "100%",
+                }}
+              >
+                <option value="">-- Sin actualización (mantener v{m.firmware_version || m.firmware || 'actual'}) --</option>
+                {availableReleases.map(r => (
+                  <option key={r.version} value={r.version}>
+                    {r.tag_name} {r.published_at ? `(${new Date(r.published_at).toLocaleDateString('es-AR')})` : ''}
+                  </option>
+                ))}
+                {selectedCleanTarget && !availableReleases.some(r => r.version === selectedCleanTarget) && (
+                  <option value={selectedCleanTarget}>v{selectedCleanTarget} (custom seleccionada)</option>
+                )}
+                <option value="__custom__">⚙️ Ingresar versión a mano...</option>
+              </select>
+            )}
+
+            {hasTargetChanged && (
+              <button
+                className="btn primary"
+                onClick={handleProgramOta}
+                disabled={busy}
+                style={{ fontSize: 12, justifyContent: 'center', marginTop: 4 }}
+              >
+                {busy ? 'Programando OTA…' : `Programar OTA a v${selectedCleanTarget || 'cancelar'}`}
+              </button>
+            )}
+            
+            {m.target_fw_version && !hasTargetChanged && (
+              <span className="mono" style={{ fontSize: 11, color: "var(--brand)" }}>
+                ✓ Programada para actualizar a v{currentCleanTarget} en el próximo poll
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="kv">
+          <span className="k">Hardware</span>
+          <div className="v" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{Icon.cpu} ESP32 + WiFi</div>
+        </div>
+
+        <div className="kv">
+          <span className="k">Polling</span>
+          <div className="v" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{Icon.signal} cada 3 s</span>
+            <span className={"spill " + (m.pollState === "live" ? "ok" : m.pollState === "cold" ? "off" : "bad")}>
+              {m.pollState === "live" ? "live" : m.pollState === "cold" ? "frío" : "sin señal"}
+            </span>
+          </div>
+        </div>
+
+        <div className="kv">
+          <span className="k">Último poll</span>
+          <div className="v mono">{m.poll == null ? "—" : `hace ${m.poll} s`}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Machine Detail View ---------- */
 function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDelete }) {
   const m = useMemo(() => machines.find(x => x.id === id) || machines[0], [machines, id]);
@@ -1156,6 +1359,16 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
   const [showKey, setShowKey] = useState(false);
   const [tab, setTab] = useState("config");
   const [targetFwVersion, setTargetFwVersion] = useState(m?.target_fw_version ?? "");
+  const [availableReleases, setAvailableReleases] = useState([]);
+  const [customFwMode, setCustomFwMode] = useState(false);
+
+  useEffect(() => {
+    apiFetch('/api/firmware/releases')
+      .then(data => {
+        if (data?.releases) setAvailableReleases(data.releases);
+      })
+      .catch(() => {});
+  }, []);
 
   // Sync state if machine changes — pero NO mientras se está editando, así el
   // auto-refresh de fondo no pisa lo que el usuario está tipeando. Al salir de
@@ -1172,6 +1385,7 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
       setQrMode(m.qr_mode ?? "dynamic");
       setQrFixedAmount(m.qr_fixed_amount ?? "");
       setTargetFwVersion(m.target_fw_version ?? "");
+      setCustomFwMode(false);
     }
   }, [m, editMode]);
 
@@ -1198,8 +1412,9 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
     }
 
     const cleanVersion = targetFwVersion.trim().replace(/^v/i, '');
+    const selectedRel = availableReleases.find(r => r.version === cleanVersion);
     const generatedOtaUrl = cleanVersion 
-      ? `https://github.com/tecnovend/tecnovend-arduino/releases/download/v${cleanVersion}/firmware-vv${cleanVersion}.bin`
+      ? (selectedRel?.ota_url || `https://github.com/tecnovend/tecnovend-arduino/releases/download/v${cleanVersion}/firmware-vv${cleanVersion}.bin`)
       : null;
 
     const hasFwChanges = cleanVersion !== (m.target_fw_version ?? "") || (generatedOtaUrl ?? "") !== (m.ota_url ?? "");
@@ -1312,6 +1527,15 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
           </div>
         )}
         <div className="item">
+          <span className="label">Ventas de hoy</span>
+          <span className="value">{ars(m.today_total || 0)}</span>
+          <span className="delta-row">
+            <span style={{ color: "var(--ink-3)" }}>
+              {m.today_count ? `${m.today_count} cobro${m.today_count !== 1 ? 's' : ''} hoy` : "sin ventas hoy"}
+            </span>
+          </span>
+        </div>
+        <div className="item">
           <span className="label">Señal WiFi</span>
           <span className="value" style={m.last_rssi != null ? { color: getWifiDetails(m.last_rssi).color } : {}}>
             {m.last_rssi != null ? `${getWifiDetails(m.last_rssi).text} (${m.last_rssi} dBm)` : "—"}
@@ -1360,10 +1584,16 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
 
       {tab === "eventos" && <EventsCard machineId={m.id} />}
 
-      {tab === "diagnostico" && !isSuperAdmin && <DiagnosticsCard machineId={m.id} />}
+      {tab === "diagnostico" && !isSuperAdmin && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <FirmwarePollingCard m={m} onUpdateMachine={onUpdateMachine} />
+          <DiagnosticsCard machineId={m.id} />
+        </div>
+      )}
 
       {tab === "admin" && isSuperAdmin && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <FirmwarePollingCard m={m} onUpdateMachine={onUpdateMachine} />
           <ReassignClientCard m={m} onRefresh={onRefresh} />
           <DiagnosticsCard machineId={m.id} />
         </div>
@@ -1516,66 +1746,6 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
                     </button>
                   )}
                 </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Firmware */}
-          <div className="card">
-            <div className="card-head">
-              <div>
-                <div className="card-title">Firmware & polling</div>
-                <div className="card-sub">Arduino + módulo de conexión</div>
-              </div>
-            </div>
-            <div className="card-body">
-              <div className="kv">
-                <span className="k">Serial de placa <span style={{ color: "var(--ink-4)", fontWeight: 400 }}>· ID Arduino</span></span>
-                <div className="v v-edit">
-                  <input
-                    type="text"
-                    value={arduinoId}
-                    onChange={(e) => setArduinoId(e.target.value)}
-                    disabled={!editMode}
-                    placeholder="ej: 3C71BF4A2B08"
-                    className="mono"
-                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
-                  />
-                </div>
-              </div>
-              <div className="kv">
-                <span className="k">Versión Actual</span>
-                <div className="v mono">{m.firmware_version || m.firmware || "—"}</div>
-              </div>
-              <div className="kv">
-                <span className="k">Versión Destino (OTA)</span>
-                <div className="v v-edit">
-                  <input
-                    type="text"
-                    value={targetFwVersion}
-                    onChange={(e) => setTargetFwVersion(e.target.value)}
-                    disabled={!editMode}
-                    placeholder={editMode ? "Ej: 0.0.3" : "—"}
-                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
-                  />
-                </div>
-              </div>
-              <div className="kv">
-                <span className="k">Hardware</span>
-                <div className="v" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{Icon.cpu} ESP32 + WiFi</div>
-              </div>
-              <div className="kv">
-                <span className="k">Polling</span>
-                <div className="v" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{Icon.signal} cada 3 s</span>
-                  <span className={"spill " + (m.pollState === "live" ? "ok" : m.pollState === "cold" ? "off" : "bad")}>
-                    {m.pollState === "live" ? "live" : m.pollState === "cold" ? "frío" : "sin señal"}
-                  </span>
-                </div>
-              </div>
-              <div className="kv">
-                <span className="k">Último poll</span>
-                <div className="v mono">{m.poll == null ? "—" : `hace ${m.poll} s`}</div>
               </div>
             </div>
           </div>

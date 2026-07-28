@@ -11,6 +11,7 @@ router.get('/', async (req, res) => {
   // Scoping opcional por organización (header x-org-id). La validación de
   // membresía está desactivada por ahora junto con el requireAuth global.
   const orgId = req.headers['x-org-id'] || null;
+  const todayStr = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
   const machines = await db.prepare(`
     SELECT m.*,
       (SELECT COUNT(*) FROM payments p
@@ -18,7 +19,13 @@ router.get('/', async (req, res) => {
           AND p.created_at >= datetime('now', '-7 days')) AS payments_week,
       (SELECT COALESCE(SUM(p.amount), 0) FROM payments p
         WHERE p.machine_id = m.id AND p.status = 'approved'
-          AND p.created_at >= datetime('now', '-7 days')) AS revenue_week
+          AND p.created_at >= datetime('now', '-7 days')) AS revenue_week,
+      (SELECT COALESCE(SUM(p.amount), 0) FROM payments p
+        WHERE p.machine_id = m.id AND p.status = 'approved'
+          AND p.created_at >= '${todayStr}') AS today_total,
+      (SELECT COUNT(*) FROM payments p
+        WHERE p.machine_id = m.id AND p.status = 'approved'
+          AND p.created_at >= '${todayStr}') AS today_count
     FROM machines m
     ${orgId ? 'WHERE m.client_id = ?' : ''}
     ORDER BY m.created_at DESC
@@ -91,11 +98,20 @@ router.get('/:id', async (req, res) => {
   const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
 
+  const todayStr = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  const todayStats = await db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS today_total, COUNT(*) AS today_count
+    FROM payments
+    WHERE machine_id = ? AND status = 'approved' AND created_at >= ?
+  `).get(req.params.id, todayStr);
+
   const payments = await db.prepare('SELECT * FROM payments WHERE machine_id = ? ORDER BY created_at DESC LIMIT 20').all(req.params.id);
   res.json({
     ...machine,
     channels_config: JSON.parse(machine.channels_config),
     state: machineState(machine),
+    today_total: Number(todayStats?.today_total || 0),
+    today_count: Number(todayStats?.today_count || 0),
     payments,
   });
 });
@@ -349,22 +365,13 @@ router.get('/:id/events', async (req, res) => {
         }
         if (d.affected_pulse_id) failParts.push(`pulso: ${d.affected_pulse_id}`);
         desc = `${desc} ⚠️ [FALLA] ${failParts.join(' · ')}`;
-      } else if (d.reason && d.reason !== 'recovered' && d.reason !== 'out_of_service') {
-        // 'recovered' y 'out_of_service' se omiten a propósito: ese mismo heartbeat
-        // siempre trae in_service y dispara su propio evento 'service' ("Volvió a
-        // servicio" / "Fuera de servicio", ver más abajo), que ya lo cuenta con un
-        // título claro — repetirlo acá como "Motivo: ..." quedaba redundante.
-        // 'startup' sí se muestra: es informativo y no tiene evento 'service' asociado.
-        const reasonText = reasonTranslations[d.reason] || d.reason;
-        desc = `${desc} · Motivo: ${reasonText}`;
-      }
-
-      // Motivo del reinicio del ESP32, solo en el heartbeat de arranque.
-      if (d.reason === 'startup' && d.reset_reason_text) {
+      } else if (d.reason === 'startup') {
+        title = 'Heartbeat (Inicio)';
         const rrText = resetReasonTranslations[d.reset_reason_text] || d.reset_reason_text;
-        if (BAD_RESET_REASONS.has(d.reset_reason_text)) kind = 'bad';
-        else if (WARN_RESET_REASONS.has(d.reset_reason_text) && kind === 'ok') kind = 'warn';
-        desc = `${desc} · Reinició por: ${rrText}`;
+        desc = `${desc} · motivo: ${rrText || 'inicio de sistema'}`;
+      } else if (d.reason && d.reason !== 'recovered' && d.reason !== 'out_of_service') {
+        const reasonText = reasonTranslations[d.reason] || d.reason;
+        desc = `${desc} · motivo: ${reasonText}`;
       }
 
       out.push({ type: e.type, kind, title, desc, at: e.created_at });

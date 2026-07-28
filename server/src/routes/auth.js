@@ -2,7 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import db from '../db/schema.js';
 import { verifyPassword, hashPassword, signToken } from '../services/auth.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, isSuperAdminUser } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -46,7 +46,17 @@ router.post('/setup', async (req, res) => {
 });
 
 // Organizaciones (clients) a las que pertenece el usuario, con su rol.
+// Si el usuario es Super Admin, puede ver e ingresar a TODAS las organizaciones.
 async function orgsForUser(userId) {
+  const isSuper = await isSuperAdminUser(userId);
+  if (isSuper) {
+    return await db.prepare(`
+      SELECT c.id, c.name, COALESCE(m.role, 'administrador') AS role
+      FROM clients c
+      LEFT JOIN memberships m ON m.client_id = c.id AND m.user_id = ?
+      ORDER BY c.name
+    `).all(userId);
+  }
   return await db.prepare(`
     SELECT c.id, c.name, m.role
     FROM memberships m

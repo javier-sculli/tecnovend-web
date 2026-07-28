@@ -15,6 +15,7 @@ const ORG = { name: 'Tecnovend' };
 const USERS = [
   { name: 'Javier Sculli', email: 'javier.sculli@gmail.com', password: '123456', role: 'administrador' },
   { name: 'Pablo', email: 'pablo.tecnovend@gmail.com', password: '123456', role: 'administrador' },
+  { name: 'Pilar', email: 'pilar.lucia.suarez@gmail.com', password: '123456', role: 'administrador' },
 ];
 
 function genId(prefix) { return prefix + crypto.randomBytes(3).toString('hex'); }

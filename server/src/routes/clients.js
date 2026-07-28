@@ -1,22 +1,13 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import db from '../db/schema.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, isSuperAdminUser } from '../middleware/auth.js';
 import { hashPassword } from '../services/auth.js';
 
 const router = Router();
 
 function genClientId() {
   return 'cli_' + crypto.randomBytes(3).toString('hex');
-}
-
-// Check if user is Super Admin (admin role of Tecnovend cli_87c461)
-async function isSuperAdminUser(userId) {
-  const check = await db.prepare(`
-    SELECT 1 FROM memberships 
-    WHERE user_id = ? AND client_id = 'cli_87c461' AND role = 'administrador'
-  `).get(userId);
-  return !!check;
 }
 
 // Listado de organizaciones. Si hay sesión, solo las del usuario (con su rol) o todas si es Super Admin.

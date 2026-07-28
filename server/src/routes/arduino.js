@@ -403,8 +403,18 @@ router.post('/status/:arduinoId', async (req, res) => {
   const machineId = machine.id;
   const detail = req.body || {};
 
-  if (detail.free_heap) newrelic.addCustomAttribute('status_free_heap', detail.free_heap);
-  if (detail.conn_type) newrelic.addCustomAttribute('status_conn_type', detail.conn_type);
+  await db.prepare(`
+    UPDATE machines
+    SET last_seen_at = ?,
+        last_uptime = COALESCE(?, last_uptime),
+        last_rssi = COALESCE(?, last_rssi)
+    WHERE id = ?
+  `).run(
+    new Date().toISOString(),
+    detail.uptime ?? null,
+    detail.rssi ?? null,
+    machineId
+  );
 
   await logEvent(machineId, 'status_log', detail);
 
