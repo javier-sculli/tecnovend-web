@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Navigate, Link } from 'react-router-dom';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
@@ -1389,17 +1389,10 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
     }
   }, [m, editMode]);
 
-  // Importante: el early return va DESPUÉS de todos los hooks.
+  // Importante: el early return va DESPUÉS de todos los hooks. Si la máquina
+  // no existe o pertenece a otro cliente, redirige limpia y silenciosamente a /maquinas.
   if (!m) {
-    return (
-      <div className="page" style={{ padding: 40, textAlign: 'center' }}>
-        <h2 style={{ color: 'var(--ink-1)', marginBottom: 8 }}>Máquina no encontrada</h2>
-        <p style={{ color: 'var(--ink-3)', marginBottom: 20 }}>
-          La máquina <code className="mono">{id}</code> no pertenece al cliente activo o no fue encontrada.
-        </p>
-        <button className="btn primary" onClick={onBack}>Volver a la lista de Máquinas</button>
-      </div>
-    );
+    return <Navigate to="/maquinas" replace />;
   }
   const conn = stateMeta[m.state] || stateMeta.offline;
   const chCount = m.channels.filter(Boolean).length;
@@ -1965,6 +1958,10 @@ export default function Maquinas() {
 
   useEffect(() => {
     let active = true;
+    setLoading(true);
+    if (id) {
+      navigate('/maquinas', { replace: true });
+    }
     const load = () => apiFetch('/api/machines')
       .then(data => { if (active) setMachines(data.map(normalizeMachine)); })
       .catch(() => {})
@@ -1972,7 +1969,7 @@ export default function Maquinas() {
     load();
     const t = setInterval(load, 60000);
     return () => { active = false; clearInterval(t); };
-  }, []);
+  }, [orgId]);
 
   const addMachine = async (newMachine) => {
     try {

@@ -153,7 +153,7 @@ function OrgSwitcher() {
               onClick={() => {
                 selectOrg(o.id);
                 setOpen(false);
-                navigate('/');
+                navigate('/maquinas', { replace: true });
               }}
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 10, padding: '8px 10px', borderRadius: 6, background: o.id === orgId ? 'var(--hover)' : 'transparent', border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--ink-1)' }}
             >
