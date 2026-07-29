@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icons.jsx';
 import { useAuth } from '../auth.jsx';
@@ -125,6 +126,7 @@ function ChangePasswordModal({ onClose }) {
 // Selector de organización (single-select).
 function OrgSwitcher() {
   const { orgs, orgId, currentOrg, selectOrg } = useAuth();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -148,7 +150,11 @@ function OrgSwitcher() {
           {orgs.map(o => (
             <button
               key={o.id}
-              onClick={() => { selectOrg(o.id); setOpen(false); }}
+              onClick={() => {
+                selectOrg(o.id);
+                setOpen(false);
+                navigate('/');
+              }}
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 10, padding: '8px 10px', borderRadius: 6, background: o.id === orgId ? 'var(--hover)' : 'transparent', border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--ink-1)' }}
             >
               <span>{o.name}</span>
