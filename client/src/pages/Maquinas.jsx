@@ -1340,7 +1340,7 @@ function FirmwarePollingCard({ m, onUpdateMachine }) {
 
 /* ---------- Machine Detail View ---------- */
 function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDelete }) {
-  const m = useMemo(() => machines.find(x => x.id === id) || machines[0], [machines, id]);
+  const m = useMemo(() => machines.find(x => x.id === id), [machines, id]);
 
   const { orgs } = useAuth();
   const isSuperAdmin = orgs?.some(o => o.id === 'cli_87c461' && o.role === 'administrador');
@@ -1389,10 +1389,18 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
     }
   }, [m, editMode]);
 
-  // Importante: el early return va DESPUÉS de todos los hooks. Al refrescar
-  // directo en /maquinas/:id, `machines` llega vacío primero (m undefined);
-  // cortar antes de los hooks cambiaría su cantidad entre renders y rompe React.
-  if (!m) return <div style={{ padding: 40, color: 'var(--ink-3)' }}>Cargando…</div>;
+  // Importante: el early return va DESPUÉS de todos los hooks.
+  if (!m) {
+    return (
+      <div className="page" style={{ padding: 40, textAlign: 'center' }}>
+        <h2 style={{ color: 'var(--ink-1)', marginBottom: 8 }}>Máquina no encontrada</h2>
+        <p style={{ color: 'var(--ink-3)', marginBottom: 20 }}>
+          La máquina <code className="mono">{id}</code> no pertenece al cliente activo o no fue encontrada.
+        </p>
+        <button className="btn primary" onClick={onBack}>Volver a la lista de Máquinas</button>
+      </div>
+    );
+  }
   const conn = stateMeta[m.state] || stateMeta.offline;
   const chCount = m.channels.filter(Boolean).length;
 
@@ -2027,8 +2035,9 @@ export default function Maquinas() {
     }
   };
 
+  const targetMachine = machines.find(x => x.id === id);
   const crumbs = id
-    ? ["Operación", <span key="m" onClick={() => navigate('/maquinas')} style={{ cursor: "pointer" }}>Máquinas</span>, id]
+    ? ["Operación", <span key="m" onClick={() => navigate('/maquinas')} style={{ cursor: "pointer" }}>Máquinas</span>, targetMachine?.name || id]
     : ["Operación", "Máquinas"];
 
   return (
