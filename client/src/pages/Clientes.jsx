@@ -3,6 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
+import ConfirmModal from '../components/ConfirmModal.jsx';
+import AlertModal from '../components/AlertModal.jsx';
 import { apiFetch } from '../api.js';
 import { useAuth } from '../auth.jsx';
 
@@ -66,15 +68,17 @@ function NewClientModal({ onClose, onCreate }) {
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
   const submit = async () => {
     if (!name.trim()) return;
     setSaving(true);
+    setError('');
     try {
       await onCreate({ name: name.trim(), contact_name: contact.trim() || null });
       onClose();
     } catch (e) {
-      alert('Error al crear cliente: ' + e.message);
+      setError('Error al crear cliente: ' + e.message);
     } finally {
       setSaving(false);
     }
@@ -89,6 +93,11 @@ function NewClientModal({ onClose, onCreate }) {
           <button className="link-btn" onClick={onClose}>{Icon.x}</button>
         </div>
         <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {error && (
+            <div style={{ padding: '8px 12px', borderRadius: 6, background: '#fef2f2', color: '#ef4444', fontSize: 13, border: '1px solid #fecaca' }}>
+              {error}
+            </div>
+          )}
           <div className="form-field">
             <label>Nombre del cliente <span className="req">*</span></label>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="Ej: Hospital Italiano" autoFocus />
@@ -118,10 +127,12 @@ function NewUserModal({ onClose, onCreate }) {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('operativo');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
   const submit = async () => {
     if (!name.trim() || !email.trim() || !password) return;
     setSaving(true);
+    setError('');
     try {
       await onCreate({
         name: name.trim(),
@@ -131,7 +142,7 @@ function NewUserModal({ onClose, onCreate }) {
       });
       onClose();
     } catch (e) {
-      alert('Error al crear usuario: ' + e.message);
+      setError('Error al crear usuario: ' + e.message);
     } finally {
       setSaving(false);
     }
@@ -146,6 +157,11 @@ function NewUserModal({ onClose, onCreate }) {
           <button className="link-btn" onClick={onClose}>{Icon.x}</button>
         </div>
         <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {error && (
+            <div style={{ padding: '8px 12px', borderRadius: 6, background: '#fef2f2', color: '#ef4444', fontSize: 13, border: '1px solid #fecaca' }}>
+              {error}
+            </div>
+          )}
           <div className="form-field">
             <label>Nombre completo <span className="req">*</span></label>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="Ej: Juan Pérez" autoFocus />
@@ -196,6 +212,24 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
   const myRoleInThisOrg = orgs.find(o => o.id === id)?.role;
   const canManageUsers = isSuperAdmin || myRoleInThisOrg === 'administrador';
 
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', description: '', confirmText: 'Confirmar', variant: 'danger', onConfirm: () => {} });
+  const [alertModal, setAlertModal] = useState({ isOpen: false, title: '', message: '', type: 'info' });
+
+  const showAlert = (message, type = 'error', title = '') => {
+    setAlertModal({ isOpen: true, message, type, title });
+  };
+
+  const showConfirm = ({ title, description, confirmText, variant = 'danger', onConfirm }) => {
+    setConfirmModal({
+      isOpen: true,
+      title,
+      description,
+      confirmText,
+      variant,
+      onConfirm
+    });
+  };
+
   const loadUsers = async () => {
     try {
       const data = await apiFetch(`/api/clients/${id}/users`);
@@ -243,7 +277,7 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
       setClient(form);
       onSaved?.();
     } catch (e) {
-      alert('Error al guardar: ' + e.message);
+      showAlert('Error al guardar: ' + e.message, 'error');
     } finally {
       setSaving(false);
     }
@@ -257,18 +291,25 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
     await loadUsers();
   };
 
-  const deleteUser = async (u) => {
+  const deleteUser = (u) => {
     if (currentUser?.id === u.id) {
-      alert('No podés eliminar tu propia cuenta');
+      showAlert('No podés eliminar tu propia cuenta', 'error', 'Atención');
       return;
     }
-    if (!confirm(`¿Estás seguro de eliminar a "${u.name}" (${u.email}) de este cliente?`)) return;
-    try {
-      await apiFetch(`/api/clients/${id}/users/${u.id}`, { method: 'DELETE' });
-      await loadUsers();
-    } catch (e) {
-      alert('Error al eliminar usuario: ' + e.message);
-    }
+    showConfirm({
+      title: 'Eliminar Usuario',
+      description: `¿Estás seguro de eliminar a "${u.name}" (${u.email}) de este cliente?`,
+      confirmText: 'Eliminar Usuario',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await apiFetch(`/api/clients/${id}/users/${u.id}`, { method: 'DELETE' });
+          await loadUsers();
+        } catch (e) {
+          showAlert('Error al eliminar usuario: ' + e.message, 'error');
+        }
+      }
+    });
   };
 
   // Render para la tarjeta de usuarios
@@ -324,18 +365,24 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
     </div>
   );
 
-  const deleteClient = async () => {
-    if (!confirm(`¿Estás seguro de eliminar el cliente "${client.name}" (${client.id})?\n\nEsta acción borrará la organización, desvinculará sus máquinas y accesos. No se puede deshacer.`)) return;
-    setSaving(true);
-    try {
-      await apiFetch(`/api/clients/${id}`, { method: 'DELETE' });
-      alert(`Cliente "${client.name}" eliminado.`);
-      onBack ? onBack() : onSaved?.();
-    } catch (e) {
-      alert('Error al eliminar cliente: ' + e.message);
-    } finally {
-      setSaving(false);
-    }
+  const deleteClient = () => {
+    showConfirm({
+      title: 'Eliminar Cliente',
+      description: `¿Estás seguro de eliminar el cliente "${client.name}" (${client.id})?\n\nEsta acción borrará la organización, desvinculará sus máquinas y accesos. No se puede deshacer.`,
+      confirmText: 'Eliminar Cliente',
+      variant: 'danger',
+      onConfirm: async () => {
+        setSaving(true);
+        try {
+          await apiFetch(`/api/clients/${id}`, { method: 'DELETE' });
+          onBack ? onBack() : onSaved?.();
+        } catch (e) {
+          showAlert('Error al eliminar cliente: ' + e.message, 'error');
+        } finally {
+          setSaving(false);
+        }
+      }
+    });
   };
 
   return (
@@ -439,6 +486,24 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
       )}
 
       {showNewUser && <NewUserModal onClose={() => setShowNewUser(false)} onCreate={createUser} />}
+
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        onClose={() => setConfirmModal(s => ({ ...s, isOpen: false }))}
+        onConfirm={confirmModal.onConfirm}
+        title={confirmModal.title}
+        description={confirmModal.description}
+        confirmText={confirmModal.confirmText}
+        variant={confirmModal.variant}
+      />
+
+      <AlertModal
+        isOpen={alertModal.isOpen}
+        onClose={() => setAlertModal(s => ({ ...s, isOpen: false }))}
+        title={alertModal.title}
+        message={alertModal.message}
+        type={alertModal.type}
+      />
     </div>
   );
 }

@@ -58,8 +58,8 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(publicDir, 'index.html'), (err) => { if (err) next(); });
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`VendPoint API corriendo en http://localhost:${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`VendPoint API corriendo en http://0.0.0.0:${PORT}`);
   if (!process.env.MP_ACCESS_TOKEN) {
     console.warn('⚠  MP_ACCESS_TOKEN no configurado — copiá .env.example a .env y completalo');
   }

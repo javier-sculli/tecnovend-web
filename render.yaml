@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: tecnovend-api
+    env: node
+    region: ohio
+    plan: starter
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false

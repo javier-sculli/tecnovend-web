@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
+import ConfirmModal from '../components/ConfirmModal.jsx';
+import AlertModal from '../components/AlertModal.jsx';
 import { apiFetch, API_BASE } from '../api.js';
 import { useAuth } from '../auth.jsx';
 
@@ -332,6 +334,12 @@ export default function Pagos() {
   const [envProd, setEnvProd] = useState(true);
   const [status, setStatus] = useState(null); // null = cargando
   const [connecting, setConnecting] = useState(false);
+  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [alertState, setAlertState] = useState({ isOpen: false, title: '', message: '', type: 'info' });
+
+  const showAlert = (message, type = 'error', title = '') => {
+    setAlertState({ isOpen: true, message, type, title });
+  };
 
   const checkStatus = async () => {
     try { setStatus(await apiFetch('/api/mp/status')); }
@@ -340,21 +348,21 @@ export default function Pagos() {
 
   useEffect(() => { checkStatus(); }, []);
 
-  // OAuth real: redirige al flujo de autorización de MP del cliente activo
-  // (vuelve por el callback). El local y las cajas viven en su cuenta.
   const connect = () => {
-    if (!orgId) { alert('Seleccioná un cliente antes de conectar Mercado Pago.'); return; }
+    if (!orgId) {
+      showAlert('Seleccioná un cliente antes de conectar Mercado Pago.', 'error', 'Atención');
+      return;
+    }
     setConnecting(true);
     window.location.href = `${API_BASE}/api/mp/auth?org=${encodeURIComponent(orgId)}`;
   };
 
-  const disconnect = async () => {
-    if (!confirm("¿Desconectar la cuenta de Mercado Pago? Vas a tener que reautorizar para volver a cobrar.")) return;
+  const confirmDisconnect = async () => {
     try {
       await apiFetch('/api/mp/auth/disconnect', { method: 'POST' });
       await checkStatus();
     } catch (e) {
-      alert('No se pudo desconectar: ' + e.message);
+      showAlert('No se pudo desconectar: ' + e.message, 'error');
     }
   };
 
@@ -388,12 +396,30 @@ export default function Pagos() {
           {status === null ? (
             <div style={{ padding: 40, color: 'var(--ink-3)' }}>Verificando conexión con Mercado Pago…</div>
           ) : connected ? (
-            <ConnectedState status={status} onDisconnect={disconnect} />
+            <ConnectedState status={status} onDisconnect={() => setShowDisconnectConfirm(true)} />
           ) : (
             <EmptyState onConnect={connect} connecting={connecting} />
           )}
         </div>
       </div>
+
+      <ConfirmModal
+        isOpen={showDisconnectConfirm}
+        onClose={() => setShowDisconnectConfirm(false)}
+        onConfirm={confirmDisconnect}
+        title="Desconectar Mercado Pago"
+        description="¿Estás seguro de desconectar la cuenta de Mercado Pago? Vas a tener que reautorizar para volver a cobrar."
+        confirmText="Desconectar"
+        variant="danger"
+      />
+
+      <AlertModal
+        isOpen={alertState.isOpen}
+        onClose={() => setAlertState(s => ({ ...s, isOpen: false }))}
+        title={alertState.title}
+        message={alertState.message}
+        type={alertState.type}
+      />
     </div>
   );
 }

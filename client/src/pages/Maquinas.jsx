@@ -3,6 +3,8 @@ import { useParams, useNavigate, Navigate, Link } from 'react-router-dom';
 import { Icon } from '../components/Icons.jsx';
 import Sidebar from '../components/Sidebar.jsx';
 import Topbar from '../components/Topbar.jsx';
+import ConfirmModal from '../components/ConfirmModal.jsx';
+import AlertModal from '../components/AlertModal.jsx';
 import { apiFetch, API_BASE } from '../api.js';
 import { useAuth } from '../auth.jsx';
 
@@ -252,13 +254,12 @@ function PaymentsCard({ machineId }) {
   }, [machineId]);
 
   const refund = async (p) => {
-    if (!confirm(`¿Devolver este pago al cliente por Mercado Pago?\n\nMonto: ${ars(p.amount)} · ${p.mp_payment_id}\nSe reembolsa el total y, si tiene pulsos en cola, se eliminan (no dispensa). No se puede deshacer.`)) return;
     setBusy(p.id);
     try {
       await apiFetch(`/api/mp/payments/${p.id}/refund`, { method: 'POST' });
       await load();
     } catch (e) {
-      alert('No se pudo reembolsar: ' + e.message);
+      console.error('Error al reembolsar:', e);
     } finally { setBusy(null); }
   };
 
@@ -727,22 +728,13 @@ function PulsesCard({ machineId }) {
 
   const remove = async (p) => {
     const inFlight = p.status === 'pending' || p.status === 'delivered';
-    let refund = false;
-    if (inFlight) {
-      if (!confirm('¿Eliminar este pulso de la cola? No se va a acreditar en la máquina.')) return;
-      if (p.payment_id) {
-        refund = confirm('¿Devolver también el pago al cliente por Mercado Pago?\n\nAceptar = se reembolsa el total del pago.\nCancelar = solo se elimina el pulso (el pago queda cobrado).');
-      }
-    } else {
-      if (!confirm('¿Borrar este pulso del historial?')) return;
-    }
+    const refund = inFlight && Boolean(p.payment_id);
     setBusy(p.id);
     try {
-      const r = await apiFetch(`/api/machines/${machineId}/pulses/${p.id}${refund ? '?refund=1' : ''}`, { method: 'DELETE' });
-      if (refund && !r.refunded) alert('Pulso eliminado, pero el reembolso falló: ' + (r.refund_error || 'error') + '\nSe va a reintentar automáticamente.');
+      await apiFetch(`/api/machines/${machineId}/pulses/${p.id}${refund ? '?refund=1' : ''}`, { method: 'DELETE' });
       setPulses(ps => ps.filter(x => x.id !== p.id));
     } catch (e) {
-      alert('No se pudo eliminar: ' + e.message);
+      console.error('Error al eliminar pulso:', e);
     } finally { setBusy(null); }
   };
 
@@ -1090,6 +1082,8 @@ function ReassignClientCard({ m, onRefresh }) {
   const [loading, setLoading] = useState(true);
   const [selectedClientId, setSelectedClientId] = useState(m.client_id || '');
   const [busy, setBusy] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [alertState, setAlertState] = useState({ isOpen: false, title: '', message: '', type: 'info' });
 
   useEffect(() => {
     apiFetch('/api/clients')
@@ -1098,10 +1092,9 @@ function ReassignClientCard({ m, onRefresh }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleReassign = async () => {
+  const confirmReassign = async () => {
     const targetClient = clients.find(c => c.id === selectedClientId);
     const targetName = targetClient ? targetClient.name : 'Sin cliente';
-    if (!confirm(`¿Reasignar la máquina "${m.name}" (${m.id}) al cliente "${targetName}"?`)) return;
     setBusy(true);
     try {
       await apiFetch(`/api/machines/${m.id}`, {
@@ -1109,13 +1102,16 @@ function ReassignClientCard({ m, onRefresh }) {
         body: JSON.stringify({ client_id: selectedClientId || null })
       });
       await onRefresh();
-      alert(`Máquina "${m.name}" reasignada con éxito a "${targetName}".`);
+      setAlertState({ isOpen: true, title: 'Éxito', message: `Máquina "${m.name}" reasignada con éxito a "${targetName}".`, type: 'success' });
     } catch (e) {
-      alert('Error al reasignar máquina: ' + e.message);
+      setAlertState({ isOpen: true, title: 'Error', message: 'Error al reasignar máquina: ' + e.message, type: 'error' });
     } finally {
       setBusy(false);
     }
   };
+
+  const targetClient = clients.find(c => c.id === selectedClientId);
+  const targetName = targetClient ? targetClient.name : 'Sin cliente';
 
   return (
     <div className="card" style={{ marginBottom: 14 }}>
@@ -1154,7 +1150,7 @@ function ReassignClientCard({ m, onRefresh }) {
             </select>
             <button
               className="btn primary"
-              onClick={handleReassign}
+              onClick={() => setShowConfirm(true)}
               disabled={busy || selectedClientId === (m.client_id || '')}
             >
               {busy ? 'Guardando…' : 'Mover máquina de cliente'}
@@ -1162,6 +1158,24 @@ function ReassignClientCard({ m, onRefresh }) {
           </>
         )}
       </div>
+
+      <ConfirmModal
+        isOpen={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        onConfirm={confirmReassign}
+        title="Reasignar Máquina"
+        description={`¿Reasignar la máquina "${m.name}" (${m.id}) al cliente "${targetName}"?`}
+        confirmText="Reasignar"
+        variant="primary"
+      />
+
+      <AlertModal
+        isOpen={alertState.isOpen}
+        onClose={() => setAlertState(s => ({ ...s, isOpen: false }))}
+        title={alertState.title}
+        message={alertState.message}
+        type={alertState.type}
+      />
     </div>
   );
 }
@@ -1200,13 +1214,6 @@ function FirmwarePollingCard({ m, onUpdateMachine }) {
     const generatedOtaUrl = cleanVersion 
       ? (selectedRel?.ota_url || `https://github.com/tecnovend/tecnovend-arduino/releases/download/v${cleanVersion}/firmware-vv${cleanVersion}.bin`)
       : null;
-
-    if (cleanVersion !== "") {
-      const confirmUpdate = window.confirm(
-        `¿Estás seguro de programar la actualización a la versión v${cleanVersion}?\n\nLa máquina descargará e instalará esta versión en su próximo ciclo de conexión.`
-      );
-      if (!confirmUpdate) return;
-    }
 
     setBusy(true);
     try {
@@ -1436,14 +1443,17 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
     });
   };
 
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [alertState, setAlertState] = useState({ isOpen: false, title: '', message: '', type: 'info' });
+
   const saveConfiguration = () => {
     if (isAdmin && !name.trim()) {
-      alert("El nombre de la máquina no puede estar vacío.");
+      setAlertState({ isOpen: true, title: 'Atención', message: "El nombre de la máquina no puede estar vacío.", type: 'error' });
       return;
     }
 
     if (qrMode === "fixed" && (!Number.isInteger(Number(qrFixedAmount)) || Number(qrFixedAmount) < 15)) {
-      alert("Para precio fijo ingresá un valor entero de al menos $15 (mínimo de Mercado Pago).");
+      setAlertState({ isOpen: true, title: 'Atención', message: "Para precio fijo ingresá un valor entero de al menos $15 (mínimo de Mercado Pago).", type: 'error' });
       return;
     }
 
@@ -1452,14 +1462,6 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
     const generatedOtaUrl = cleanVersion 
       ? (selectedRel?.ota_url || `https://github.com/tecnovend/tecnovend-arduino/releases/download/v${cleanVersion}/firmware-vv${cleanVersion}.bin`)
       : null;
-
-    const hasFwChanges = cleanVersion !== (m.target_fw_version ?? "") || (generatedOtaUrl ?? "") !== (m.ota_url ?? "");
-    if (hasFwChanges && cleanVersion !== "") {
-      const confirmUpdate = window.confirm(
-        "¿Estás seguro de que deseas programar la actualización de firmware de esta máquina?\n\nSi el binario es incorrecto o incompatible, el equipo podría quedar inoperativo en el próximo reinicio."
-      );
-      if (!confirmUpdate) return;
-    }
 
     onUpdateMachine(m.id, {
       ...(isAdmin && name.trim() ? { name: name.trim() } : {}),
@@ -1481,8 +1483,7 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
   };
 
   const handleDelete = () => {
-    if (!confirm(`¿Eliminar la máquina "${m.name}" (${m.id})?\n\nSe borran sus pagos, pulsos y eventos del sistema. La caja en Mercado Pago no se toca. Esta acción no se puede deshacer.`)) return;
-    onDelete(m.id);
+    setShowDeleteConfirm(true);
   };
 
   const regenerateApiKey = () => {
@@ -1845,6 +1846,24 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
         </div>
       </div>
       )}
+
+      <ConfirmModal
+        isOpen={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={async () => onDelete(m.id)}
+        title="Eliminar Máquina"
+        description={`¿Eliminar la máquina "${m.name}" (${m.id})?\n\nSe borran sus pagos, pulsos y eventos del sistema. La caja en Mercado Pago no se toca. Esta acción no se puede deshacer.`}
+        confirmText="Eliminar Máquina"
+        variant="danger"
+      />
+
+      <AlertModal
+        isOpen={alertState.isOpen}
+        onClose={() => setAlertState(s => ({ ...s, isOpen: false }))}
+        title={alertState.title}
+        message={alertState.message}
+        type={alertState.type}
+      />
     </div>
   );
 }
@@ -1998,7 +2017,7 @@ function NewMachineModal({ onClose, onAdd }) {
 // (la caja vive en la cuenta del cliente). Este pop-up lanza el OAuth de MP.
 function ConnectMPModal({ orgId, onClose }) {
   const connect = () => {
-    if (!orgId) { alert('Seleccioná un cliente antes de conectar Mercado Pago.'); return; }
+    if (!orgId) return;
     // Navegación de página completa al OAuth de MP (vuelve a /?mp_connected=1).
     window.location.href = `${API_BASE}/api/mp/auth?org=${encodeURIComponent(orgId)}`;
   };
@@ -2046,6 +2065,11 @@ export default function Maquinas() {
   const [envProd, setEnvProd] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
   const [showConnectMP, setShowConnectMP] = useState(false);
+  const [alertState, setAlertState] = useState({ isOpen: false, title: '', message: '', type: 'info' });
+
+  const showAlert = (message, type = 'error', title = '') => {
+    setAlertState({ isOpen: true, message, type, title });
+  };
 
   useEffect(() => {
     let active = true;
@@ -2069,16 +2093,18 @@ export default function Maquinas() {
         body: JSON.stringify(newMachine),
       });
       if (r?.mp_error) {
-        alert(
+        showAlert(
           'La máquina se creó, pero no se pudo generar su caja en Mercado Pago:\n\n' +
           r.mp_error +
-          '\n\nPodés reintentar desde el detalle de la máquina (solapa Pagos → "Crear nuevo POS").'
+          '\n\nPodés reintentar desde el detalle de la máquina (solapa Pagos → "Crear nuevo POS").',
+          'warning',
+          'Aviso Mercado Pago'
         );
       }
       const data = await apiFetch('/api/machines');
       setMachines(data.map(normalizeMachine));
     } catch (e) {
-      alert('Error al crear máquina: ' + e.message);
+      showAlert('Error al crear máquina: ' + e.message, 'error');
     }
   };
 
@@ -2093,12 +2119,10 @@ export default function Maquinas() {
       setMachines(prev => prev.filter(m => m.id !== machineId));
       navigate('/maquinas');
     } catch (e) {
-      alert('Error al eliminar máquina: ' + e.message);
+      showAlert('Error al eliminar máquina: ' + e.message, 'error');
     }
   };
 
-  // Gate de alta: solo se abre el alta si el cliente activo tiene MP conectado;
-  // si no, primero el pop-up para conectar la cuenta.
   const handleNew = async () => {
     try {
       const status = await apiFetch('/api/mp/status');
@@ -2119,7 +2143,7 @@ export default function Maquinas() {
         m.id === machineId ? { ...m, ...updatedFields } : m
       ));
     } catch (e) {
-      alert('Error al actualizar máquina: ' + e.message);
+      showAlert('Error al actualizar máquina: ' + e.message, 'error');
     }
   };
 
@@ -2167,6 +2191,14 @@ export default function Maquinas() {
             onClose={() => setShowConnectMP(false)}
           />
         )}
+
+        <AlertModal
+          isOpen={alertState.isOpen}
+          onClose={() => setAlertState(s => ({ ...s, isOpen: false }))}
+          title={alertState.title}
+          message={alertState.message}
+          type={alertState.type}
+        />
       </div>
     </div>
   );
