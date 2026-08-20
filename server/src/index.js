@@ -58,12 +58,16 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(publicDir, 'index.html'), (err) => { if (err) next(); });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`VendPoint API corriendo en http://localhost:${PORT}`);
   if (!process.env.MP_ACCESS_TOKEN) {
     console.warn('⚠  MP_ACCESS_TOKEN no configurado — copiá .env.example a .env y completalo');
   }
 });
+
+// Aumentar el Keep-Alive timeout de Node.js a 65s (por defecto es 5s) para que el TCP Proxy de los Arduinos no cierre sockets entre polls de 3s
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 
 // Barrido periódico: expira los pulsos sin ACK pasados los 3 min, marca sus
 // pagos para reembolso y procesa los reembolsos pendientes (incluye reintentos

@@ -44,6 +44,7 @@ router.post('/', async (req, res) => {
     pulse_value = 200, min_payment = 200, channels_config = [],
     wifi_ssid, wifi_user, wifi_password,
     qr_mode = 'dynamic', qr_fixed_amount,
+    poll_interval_s = 3,
   } = req.body;
   if (!id || !name) return res.status(400).json({ error: 'id y name son requeridos' });
   if (!['dynamic', 'fixed'].includes(qr_mode)) return res.status(400).json({ error: "qr_mode debe ser 'dynamic' o 'fixed'" });
@@ -66,8 +67,8 @@ router.post('/', async (req, res) => {
        pos_id, terminal_id, mp_pos_id, mp_store_id, mp_store_name, client_id,
        pulse_value, min_payment, channels_config,
        wifi_ssid, wifi_user, wifi_password,
-       qr_mode, qr_fixed_amount)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       qr_mode, qr_fixed_amount, poll_interval_s)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, name, location ?? null, address ?? null, model ?? null,
     serial, serial, api_key ?? null,
@@ -75,7 +76,7 @@ router.post('/', async (req, res) => {
     mp_store_id ?? null, mp_store_name ?? null, client_id ?? null,
     pulse_value, min_payment, JSON.stringify(channels_config),
     wifi_ssid ?? null, wifi_user ?? null, wifi_password ?? null,
-    qr_mode, qr_fixed_amount ?? null,
+    qr_mode, qr_fixed_amount ?? null, Number(poll_interval_s) || 3,
   );
 
   // Provisión automática en MP: local default compartido + caja propia de la
@@ -125,6 +126,7 @@ router.put('/:id', async (req, res) => {
     wifi_ssid, wifi_user, wifi_password,
     qr_mode, qr_fixed_amount,
     target_fw_version, ota_url,
+    poll_interval_s,
   } = req.body;
   const machine = await db.prepare('SELECT id FROM machines WHERE id = ?').get(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
@@ -181,7 +183,8 @@ router.put('/:id', async (req, res) => {
       wifi_user         = COALESCE(?, wifi_user),
       wifi_password     = COALESCE(?, wifi_password),
       qr_mode           = COALESCE(?, qr_mode),
-      qr_fixed_amount   = COALESCE(?, qr_fixed_amount)
+      qr_fixed_amount   = COALESCE(?, qr_fixed_amount),
+      poll_interval_s   = COALESCE(?, poll_interval_s)
     WHERE id = ?
   `).run(
     name ?? null, location ?? null, address ?? null, model ?? null,
@@ -194,6 +197,7 @@ router.put('/:id', async (req, res) => {
     pulse_duration_ms ?? null, pulse_gap_ms ?? null,
     wifi_ssid ?? null, wifi_user ?? null, wifi_password ?? null,
     qr_mode ?? null, qr_fixed_amount != null ? Number(qr_fixed_amount) : null,
+    poll_interval_s != null ? Number(poll_interval_s) : null,
     req.params.id,
   );
 
@@ -323,23 +327,35 @@ router.get('/:id/events', async (req, res) => {
   // `reset_reason_text` (esp_reset_reason(), api.cpp `resetReasonText()`): motivo
   // del último reinicio del ESP32. Viaja en TODOS los heartbeats (no solo el de
   // startup), así que solo la mostramos/coloreamos en el heartbeat de inicio —
-  // repetirla en cada latido sería ruido, ya que no cambia hasta el próximo boot.
+  function fmtUptimeServer(sec) {
+    if (sec == null) return '—';
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
   const resetReasonTranslations = {
-    poweron: 'encendido (power-on)',
-    external: 'reset externo / botón físico',
-    software: 'reinicio por software',
-    panic: 'excepción (panic)',
-    interrupt_wdt: 'watchdog de interrupción',
-    task_wdt: 'watchdog de tarea',
-    watchdog: 'watchdog',
-    deepsleep: 'salida de deep sleep',
-    brownout: 'baja tensión (brownout)',
-    sdio: 'SDIO',
-    unknown: 'desconocido',
+    poweron: 'Encendido / Reconexión eléctrica',
+    external: 'Reinicio manual / Botón físico',
+    software: 'Reinicio por software',
+    'software: wifi stale': 'Reinicio por pérdida de WiFi',
+    panic: 'Reinicio por falla interna',
+    interrupt_wdt: 'Reinicio automático de control',
+    task_wdt: 'Reinicio automático de control',
+    watchdog: 'Reinicio automático de control',
+    deepsleep: 'Salida de suspensión (deep sleep)',
+    brownout: 'Baja tensión eléctrica (caída de energía)',
+    sdio: 'Reinicio por SDIO',
+    unknown: 'Reinicio por causa no especificada',
   };
   // Reinicios que delatan un problema (crash/hang/alimentación) vs. los normales
   // (se lo espera al enchufar la máquina o reprogramarla).
-  const BAD_RESET_REASONS = new Set(['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout']);
+  const BAD_RESET_REASONS = new Set(['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout', 'software: wifi stale']);
   const WARN_RESET_REASONS = new Set(['sdio', 'unknown']);
 
   for (const e of events) {
@@ -348,7 +364,7 @@ router.get('/:id/events', async (req, res) => {
     if (e.type === 'heartbeat') {
       const parts = [];
       if (d.rssi != null) parts.push(`${d.rssi} dBm`);
-      if (d.uptime != null) parts.push(`uptime ${d.uptime}s`);
+      if (d.uptime != null) parts.push(`uptime ${fmtUptimeServer(d.uptime)}`);
       if (d.fw) parts.push(`fw ${d.fw}`);
 
       let desc = parts.join(' · ') || 'señal de vida';
@@ -367,8 +383,13 @@ router.get('/:id/events', async (req, res) => {
         desc = `${desc} ⚠️ [FALLA] ${failParts.join(' · ')}`;
       } else if (d.reason === 'startup') {
         title = 'Heartbeat (Inicio)';
-        const rrText = resetReasonTranslations[d.reset_reason_text] || d.reset_reason_text;
-        desc = `${desc} · motivo: ${rrText || 'inicio de sistema'}`;
+        const rrText = resetReasonTranslations[d.reset_reason_text] || d.reset_reason_text || 'Inicio de sistema';
+        const meta = [];
+        if (d.fw) meta.push(`fw ${d.fw}`);
+        if (d.uptime != null) meta.push(`uptime ${fmtUptimeServer(d.uptime)}`);
+        if (d.rssi != null) meta.push(`${d.rssi} dBm`);
+        const secInfo = meta.length > 0 ? ` (${meta.join(' · ')})` : '';
+        desc = `Motivo: ${rrText}${secInfo}`;
       } else if (d.reason && d.reason !== 'recovered' && d.reason !== 'out_of_service') {
         const reasonText = reasonTranslations[d.reason] || d.reason;
         desc = `${desc} · motivo: ${reasonText}`;

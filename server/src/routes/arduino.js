@@ -90,6 +90,7 @@ router.get('/poll/:arduinoId', async (req, res) => {
 
   res.json({
     machine_id: machineId,
+    poll_interval_s: machine.poll_interval_s ?? 3,
     pending_pulses: pending.map(p => ({ pulse_id: p.id, channel: p.channel, count: p.count }))
   });
 });
@@ -196,7 +197,7 @@ router.get('/config/:arduinoId', async (req, res) => {
   const row = await db.prepare(`
     SELECT
       pulse_value, pulse_duration_ms, pulse_gap_ms,
-      wifi_ssid, wifi_user, wifi_password
+      wifi_ssid, wifi_user, wifi_password, poll_interval_s
     FROM machines
     WHERE id = ?
   `).get(machineId);
@@ -216,6 +217,7 @@ router.get('/config/:arduinoId', async (req, res) => {
       pulse_value: row.pulse_value ?? null,
       pulse_duration_ms: row.pulse_duration_ms ?? null,
       pulse_gap_ms: row.pulse_gap_ms ?? null,
+      poll_interval_s: row.poll_interval_s ?? 3,
     },
   });
 });
@@ -343,8 +345,9 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
 
         if (!recentAlert) {
           console.warn(`[BOOTLOOP-ALERT] La máquina ${machine.name} (${machineId}) está experimentando reinicios repetidos. reset_reason: ${reset_reason_text || 'startup'}, uptime: ${uptime || 0}s`);
+          const resetCount = Number(recentResets.count) || 0;
           await logEvent(machineId, 'bootloop', { 
-            desc: `La máquina se reinició ${recentResets.count + 1} veces en los últimos 10 minutos (último motivo: ${reset_reason_text || 'inicio'})`
+            desc: `La máquina se reinició ${resetCount} veces en los últimos 10 minutos (último motivo: ${reset_reason_text || 'inicio'})`
           });
         }
       }

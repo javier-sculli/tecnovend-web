@@ -12,57 +12,89 @@ const resetReasonTranslations = {
   interrupt_wdt: 'Reinicio automático de control',
   watchdog: 'Reinicio automático de control',
   panic: 'Reinicio automático por error de software',
+  software: 'Reinicio por software',
+  'software: wifi stale': 'Reinicio por pérdida de WiFi',
   deepsleep: 'Salida de modo de ahorro de energía',
   external: 'Botón de reinicio físico presionado',
   unknown: 'Reinicio por causa desconocida'
 };
 
-// Helper para generar series de tiempo sin huecos (zero-filling)
-function generateTimeSeries(sinceStr, untilStr, dbRows, isHourly) {
-  const since = new Date(sinceStr);
-  const until = new Date(untilStr);
-  const series = [];
+const TZ = 'America/Argentina/Buenos_Aires';
 
-  const intervalMs = isHourly ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-  
+function getLocalDateString(d, isHourly = false) {
+  const dateObj = typeof d === 'string' || typeof d === 'number' ? new Date(d) : d;
+  const parts = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false
+  }).formatToParts(dateObj).forEach(p => { if (p.type !== 'literal') parts[p.type] = p.value; });
+
+  const hourStr = parts.hour === '24' ? '00' : parts.hour;
+  return isHourly 
+    ? `${parts.year}-${parts.month}-${parts.day}T${hourStr}`
+    : `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+// Helper para generar series de tiempo sin huecos (zero-filling) en hora local de Argentina
+function generateTimeSeries(sinceStr, untilStr, dbRows, isHourly) {
+  const sinceLocalStr = getLocalDateString(sinceStr, isHourly);
+  const untilLocalStr = getLocalDateString(untilStr, isHourly);
+
   // Crear mapa de indexación rápida para las filas existentes
   const map = {};
   for (const row of dbRows) {
-    const d = new Date(row.date);
-    const key = isHourly 
-      ? d.toISOString().substring(0, 13) // "YYYY-MM-DDTHH"
-      : d.toISOString().substring(0, 10); // "YYYY-MM-DD"
+    if (!row.date) continue;
+    let key;
+    if (typeof row.date === 'string' && row.date.length >= 10 && !row.date.includes('T') && !row.date.includes('Z')) {
+      const datePart = row.date.substring(0, 10);
+      const hourPart = row.date.substring(11, 13) || '00';
+      key = isHourly ? `${datePart}T${hourPart}` : datePart;
+    } else {
+      key = getLocalDateString(row.date, isHourly);
+    }
     map[key] = {
-      amount: Number(row.total_amount),
-      count: Number(row.count)
+      amount: Number(row.total_amount) || 0,
+      count: Number(row.count) || 0
     };
   }
 
-  let curr = new Date(since.getTime());
-  // Si agrupamos por día, forzamos que inicie a las 00:00:00 para la iteración
-  if (!isHourly) {
-    curr.setHours(0, 0, 0, 0);
+  const series = [];
+
+  if (isHourly) {
+    let curr = new Date(sinceStr);
+    const end = new Date(untilStr);
+    while (curr <= end) {
+      const key = getLocalDateString(curr, true);
+      const hour = key.split('T')[1] || '00';
+      const label = `${hour}:00`;
+      const val = map[key] || { amount: 0, count: 0 };
+      series.push({ key, label, amount: val.amount, count: val.count });
+      curr = new Date(curr.getTime() + 60 * 60 * 1000);
+    }
+  } else {
+    const [sy, sm, sd] = sinceLocalStr.split('-').map(Number);
+    const [uy, um, ud] = untilLocalStr.split('-').map(Number);
+    
+    let curr = new Date(sy, sm - 1, sd, 12, 0, 0); // 12:00 mediodía local
+    const end = new Date(uy, um - 1, ud, 12, 0, 0);
+
+    while (curr <= end) {
+      const y = curr.getFullYear();
+      const m = String(curr.getMonth() + 1).padStart(2, '0');
+      const d = String(curr.getDate()).padStart(2, '0');
+      const key = `${y}-${m}-${d}`;
+      const label = `${d}/${m}`;
+      const val = map[key] || { amount: 0, count: 0 };
+      series.push({ key, label, amount: val.amount, count: val.count });
+
+      curr.setDate(curr.getDate() + 1);
+    }
   }
 
-  while (curr <= until) {
-    const key = isHourly
-      ? curr.toISOString().substring(0, 13)
-      : curr.toISOString().substring(0, 10);
-      
-    const label = isHourly
-      ? `${String(curr.getHours()).padStart(2, '0')}:00`
-      : curr.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
-
-    const val = map[key] || { amount: 0, count: 0 };
-    series.push({
-      key,
-      label,
-      amount: val.amount,
-      count: val.count
-    });
-
-    curr = new Date(curr.getTime() + intervalMs);
-  }
   return series;
 }
 
@@ -199,7 +231,7 @@ router.get('/summary', async (req, res) => {
     
     const chartQuery = `
       SELECT 
-        date_trunc('${truncUnit}', created_at) as date,
+        date_trunc('${truncUnit}', created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires') as date,
         COALESCE(SUM(amount), 0) as total_amount,
         COUNT(*) as count
       FROM payments

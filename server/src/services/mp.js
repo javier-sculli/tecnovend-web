@@ -183,17 +183,20 @@ function splitAddress(addr) {
   return match ? [match[1], match[2]] : [addr, '0'];
 }
 
-export async function createPOS({ externalId, name, externalStoreId }, clientId) {
+export async function createPOS({ externalId, name, storeId, externalStoreId }, clientId) {
   // OJO: NO seteamos notification_url en la caja a propósito. Un notification_url
   // a nivel caja overridea la config global de Webhooks del panel (topic Pagos),
   // limitando los avisos. Sin él, MP usa los webhooks globales que configuramos.
-  return call('POST', '/pos', {
+  const body = {
     name,
     fixed_amount: false,
-    external_store_id: externalStoreId,
     external_id: externalId,
     category: 621102,
-  }, { clientId });
+  };
+  if (storeId != null) body.store_id = Number(storeId);
+  if (externalStoreId) body.external_store_id = externalStoreId;
+
+  return call('POST', '/pos', body, { clientId });
 }
 
 export async function getPOS(posId, clientId) {
@@ -222,7 +225,7 @@ export async function createOrder(externalPosId, { amount, description, external
       quantity: 1,
       unit_measure: 'unit',
     }],
-    config: { qr: { external_pos_id: externalPosId } },
+    config: { qr: { mode: 'hybrid', external_pos_id: externalPosId } },
     transactions: {
       payments: [{ amount: amtStr }],
     },
@@ -338,7 +341,8 @@ export async function ensureDefaultStore(clientId) {
 export async function provisionMachinePos(machine) {
   const clientId = machine.client_id || null;
   const store = await ensureDefaultStore(clientId);
-  const storeExtId = store.external_id || DEFAULT_STORE_EXT_ID;
+  const storeId = store?.id ? Number(store.id) : null;
+  const storeExtId = store?.external_id || null;
 
   // MP exige que el external_id de la caja sea alfanumérico (sin guiones bajos):
   // 'machine_230' → 'machine230'. Es el valor que MP devuelve como external_pos_id
@@ -353,6 +357,7 @@ export async function provisionMachinePos(machine) {
         pos = await createPOS({
           externalId: posExtId,
           name: machine.name,
+          storeId,
           externalStoreId: storeExtId,
         }, clientId);
         break;

@@ -483,11 +483,30 @@ function DiagnosticsCard({ machineId }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [machineId]);
 
+  const getResetReasonLabel = (reason) => {
+    if (!reason) return '—';
+    const map = {
+      'poweron': 'Encendido / Reconexión eléctrica',
+      'external': 'Reinicio manual / Botón físico',
+      'software': 'Reinicio por software',
+      'software: wifi stale': 'Reinicio por pérdida de WiFi',
+      'panic': 'Reinicio por falla interna',
+      'interrupt_wdt': 'Reinicio automático por control',
+      'task_wdt': 'Reinicio automático por control',
+      'watchdog': 'Reinicio automático por control',
+      'deepsleep': 'Salida de suspensión',
+      'brownout': 'Reinicio por baja tensión de energía',
+      'sdio': 'Reinicio por SDIO',
+      'unknown': 'Causa no especificada',
+    };
+    return map[reason] || reason;
+  };
+
   const getResetReasonColor = (reason) => {
     if (!reason) return '';
-    const bad = ['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout'];
+    const bad = ['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout', 'software: wifi stale'];
     if (bad.includes(reason)) return 'var(--bad)';
-    const warn = ['sdio', 'unknown', 'software: wifi stale'];
+    const warn = ['sdio', 'unknown'];
     if (warn.includes(reason)) return 'var(--warn)';
     return 'var(--ok)';
   };
@@ -555,7 +574,7 @@ function DiagnosticsCard({ machineId }) {
                     {fmtUptime(d.uptime) !== '—' ? `${Math.round((d.free_heap || 0) / 1024)} KB` : '—'}
                   </span>
                   <span className="mono" style={{ fontSize: '11px', fontWeight: (isBadReset && d.reason === 'startup') ? 'bold' : 'normal', color: d.reason === 'startup' ? getResetReasonColor(d.reset_reason_text) : 'var(--ink-4)' }}>
-                    {d.reason === 'startup' ? (d.reset_reason_text || '—') : '—'}
+                    {d.reason === 'startup' ? getResetReasonLabel(d.reset_reason_text) : '—'}
                   </span>
                 </div>
                 {isExpanded && (
@@ -628,6 +647,12 @@ function DiagnosticsCard({ machineId }) {
                         <span className="mono">{d.config_loaded ? 'Sí' : 'No'}</span>
                       </div>
                       <div>
+                        <strong style={{ color: 'var(--ink-3)' }}>Polling Activo en Placa:</strong>{' '}
+                        <span className="mono" style={{ fontWeight: 'bold', color: 'var(--brand)' }}>
+                          {d.poll_interval_s != null ? `${d.poll_interval_s}s` : '—'}
+                        </span>
+                      </div>
+                      <div>
                         <strong style={{ color: 'var(--ink-3)' }}>Reporte de Inicio Enviado:</strong>{' '}
                         <span className="mono">{d.startup_sent ? 'Sí' : 'No'}</span>
                       </div>
@@ -640,7 +665,7 @@ function DiagnosticsCard({ machineId }) {
                       <div>
                         <strong style={{ color: 'var(--ink-3)' }}>Motivo de Reinicio:</strong>{' '}
                         <span className="mono" style={{ fontWeight: (isBadReset && d.reason === 'startup') ? 'bold' : 'normal', color: d.reason === 'startup' ? getResetReasonColor(d.reset_reason_text) : 'var(--ink-4)' }}>
-                          {d.reason === 'startup' ? (d.reset_reason_text ? `${d.reset_reason_text} (${d.reset_reason})` : '—') : '—'}
+                          {d.reason === 'startup' ? (d.reset_reason_text ? `${getResetReasonLabel(d.reset_reason_text)} (fw ${d.fw || '—'} · uptime ${fmtUptime(d.uptime)})` : '—') : '—'}
                         </span>
                       </div>
                       <div>
@@ -1322,7 +1347,7 @@ function FirmwarePollingCard({ m, onUpdateMachine }) {
         <div className="kv">
           <span className="k">Polling</span>
           <div className="v" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{Icon.signal} cada 3 s</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{Icon.signal} cada {m.poll_interval_s ?? 3} s</span>
             <span className={"spill " + (m.pollState === "live" ? "ok" : m.pollState === "cold" ? "off" : "bad")}>
               {m.pollState === "live" ? "live" : m.pollState === "cold" ? "frío" : "sin señal"}
             </span>
@@ -1342,10 +1367,13 @@ function FirmwarePollingCard({ m, onUpdateMachine }) {
 function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDelete }) {
   const m = useMemo(() => machines.find(x => x.id === id), [machines, id]);
 
-  const { orgs } = useAuth();
+  const { orgs, currentOrg } = useAuth();
   const isSuperAdmin = orgs?.some(o => o.id === 'cli_87c461' && o.role === 'administrador');
+  const isAdmin = isSuperAdmin || currentOrg?.role === 'administrador' || orgs?.some(o => o.id === m?.client_id && o.role === 'administrador');
 
   const [editMode, setEditMode] = useState(false);
+  const [name, setName] = useState(m?.name ?? "");
+  const [pollInterval, setPollInterval] = useState(m?.poll_interval_s ?? 3);
   const [pulseValue, setPulseValue] = useState(m?.pulse_value);
   const [pulseDuration, setPulseDuration] = useState(m?.pulse_duration_ms);
   const [pulseGap, setPulseGap] = useState(m?.pulse_gap_ms);
@@ -1375,6 +1403,8 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
   // edición (guardar/cancelar) se vuelve a sincronizar con los datos del server.
   useEffect(() => {
     if (m && !editMode) {
+      setName(m.name ?? "");
+      setPollInterval(m.poll_interval_s ?? 3);
       setPulseValue(m.pulse_value);
       setPulseDuration(m.pulse_duration_ms);
       setPulseGap(m.pulse_gap_ms);
@@ -1407,6 +1437,11 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
   };
 
   const saveConfiguration = () => {
+    if (isAdmin && !name.trim()) {
+      alert("El nombre de la máquina no puede estar vacío.");
+      return;
+    }
+
     if (qrMode === "fixed" && (!Number.isInteger(Number(qrFixedAmount)) || Number(qrFixedAmount) < 15)) {
       alert("Para precio fijo ingresá un valor entero de al menos $15 (mínimo de Mercado Pago).");
       return;
@@ -1427,6 +1462,8 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
     }
 
     onUpdateMachine(m.id, {
+      ...(isAdmin && name.trim() ? { name: name.trim() } : {}),
+      poll_interval_s: Number(pollInterval) || 3,
       pulse_value: Number(pulseValue) || 0,
       pulse_duration_ms: Number(pulseDuration) || 0,
       pulse_gap_ms: Number(pulseGap) || 0,
@@ -1461,7 +1498,26 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
         <div>
           <button className="back-link" onClick={onBack}>{Icon.chev} Volver a Máquinas</button>
           <div className="detail-title-row">
-            <h1 className="detail-title">{m.name}</h1>
+            {editMode && isAdmin ? (
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Nombre de la máquina"
+                style={{
+                  fontSize: "20px",
+                  fontWeight: "500",
+                  padding: "4px 8px",
+                  border: "1px solid var(--line-active)",
+                  borderRadius: "6px",
+                  background: "var(--bg-2)",
+                  color: "var(--ink-1)",
+                  fontFamily: "inherit"
+                }}
+              />
+            ) : (
+              <h1 className="detail-title">{m.name}</h1>
+            )}
             <span className={"spill " + conn.dot}>
               <span style={{width:6,height:6,borderRadius:99,background:"currentColor",opacity:.6,display:"inline-block",marginRight:6}}></span>
               {conn.txt}
@@ -1617,6 +1673,24 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
               </div>
             </div>
             <div className="card-body">
+              <div className="kv">
+                <span className="k">Nombre de la máquina</span>
+                <div className="v v-edit">
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    disabled={!editMode || !isAdmin}
+                    placeholder="Nombre de la máquina"
+                    style={editMode && isAdmin ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
+                  />
+                  {!isAdmin && editMode && (
+                    <span style={{ fontSize: 11, color: "var(--ink-4)", marginLeft: 6 }}>
+                      (Solo administradores)
+                    </span>
+                  )}
+                </div>
+              </div>
               {/* Precio del QR de MP: toggle. ON = fijo (el QR queda cargado con
                   el valor); OFF = dinámico (el cliente tipea el monto). */}
               <div className="kv">
@@ -1690,6 +1764,23 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
                     style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
                   />
                   <span style={{ color: "var(--ink-4)", fontSize: 11 }}>ms</span>
+                </div>
+              </div>
+              <div className="kv">
+                <span className="k">Frecuencia de polling</span>
+                <div className="v v-edit">
+                  <select
+                    value={pollInterval}
+                    onChange={(e) => setPollInterval(Number(e.target.value))}
+                    disabled={!editMode}
+                    style={editMode ? { border: "1px solid var(--line-active)", background: "var(--bg-2)" } : {}}
+                  >
+                    <option value={1}>1 segundo (Ultra rápido)</option>
+                    <option value={2}>2 segundos (Rápido)</option>
+                    <option value={3}>3 segundos (Recomendado / Default)</option>
+                    <option value={5}>5 segundos (Normal)</option>
+                    <option value={10}>10 segundos (Bajo consumo)</option>
+                  </select>
                 </div>
               </div>
             </div>

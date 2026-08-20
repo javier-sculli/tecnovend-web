@@ -118,7 +118,8 @@ export async function initDb() {
       wifi_user       TEXT,
       wifi_password   TEXT,
       qr_mode         TEXT NOT NULL DEFAULT 'dynamic',
-      qr_fixed_amount INTEGER
+      qr_fixed_amount INTEGER,
+      poll_interval_s INTEGER NOT NULL DEFAULT 3
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_machines_arduino_id ON machines(arduino_id) WHERE arduino_id IS NOT NULL;`);
@@ -128,6 +129,7 @@ export async function initDb() {
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS offline_notified_at TIMESTAMP;`);
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_fw_version TEXT;`);
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS ota_url TEXT;`);
+  await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS poll_interval_s INTEGER NOT NULL DEFAULT 3;`);
 
 
   await pool.query(`

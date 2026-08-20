@@ -343,9 +343,15 @@ export default function Dashboard() {
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   
+  // Helper para string de fecha local YYYY-MM-DD (evita desfase UTC de noche)
+  const toLocalDateStr = (d = new Date()) => {
+    const off = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - off).toISOString().slice(0, 10);
+  };
+
   // Rango de fechas personalizado (input value YYYY-MM-DD)
-  const todayStr = new Date().toISOString().split('T')[0];
-  const lastWeekStr = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const todayStr = toLocalDateStr(new Date());
+  const lastWeekStr = toLocalDateStr(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
   const [customSince, setCustomSince] = useState(lastWeekStr);
   const [customUntil, setCustomUntil] = useState(todayStr);
 
