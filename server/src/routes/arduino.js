@@ -11,7 +11,11 @@ const router = Router();
 // firmware). Todos los endpoints reciben ese ID y resuelven a qué máquina
 // pertenece. Devuelve la fila completa de la máquina o null.
 async function resolveMachine(arduinoId) {
-  const machine = await db.prepare('SELECT * FROM machines WHERE arduino_id = ?').get(arduinoId);
+  if (!arduinoId) return null;
+  const machine = await db.prepare(`
+    SELECT * FROM machines 
+    WHERE arduino_id = ? OR id = ? OR pos_id = ? OR mp_pos_id = ? OR device_serial = ?
+  `).get(arduinoId, arduinoId, arduinoId, arduinoId, arduinoId);
   if (machine) {
     newrelic.addCustomAttributes({
       arduino_id: arduinoId,
@@ -25,7 +29,9 @@ async function resolveMachine(arduinoId) {
 }
 
 function verifyApiKey(machine, apiKey) {
-  if (!machine?.api_key_hash) return true; // sin clave configurada, permitir en dev
+  if (!machine) return false;
+  if (machine.api_key && apiKey === machine.api_key) return true;
+  if (!machine.api_key_hash) return true; // sin clave hash configurada, permitir en dev
   const hash = crypto.createHash('sha256').update(apiKey || '').digest('hex');
   return hash === machine.api_key_hash;
 }
@@ -38,6 +44,7 @@ async function logEvent(machineId, type, detail) {
 
 // Polling: Arduino consulta pulsos pendientes
 router.get('/poll/:arduinoId', async (req, res) => {
+  console.log(`[poll-in] ${req.params.arduinoId}`);
   newrelic.addCustomAttribute('arduino_action', 'poll');
   const machine = await resolveMachine(req.params.arduinoId);
   if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
@@ -262,11 +269,12 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
 
   await db.prepare(`
     UPDATE machines SET
-      last_seen_at     = datetime('now'),
-      last_rssi        = COALESCE(?, last_rssi),
-      last_uptime      = COALESCE(?, last_uptime),
-      firmware_version = COALESCE(?, firmware_version),
-      status           = COALESCE(?, status)
+      last_seen_at        = datetime('now'),
+      offline_notified_at = NULL,
+      last_rssi           = COALESCE(?, last_rssi),
+      last_uptime         = COALESCE(?, last_uptime),
+      firmware_version    = COALESCE(?, firmware_version),
+      status              = COALESCE(?, status)
     WHERE id = ?
   `).run(
     Number.isInteger(rssi) ? rssi : null,

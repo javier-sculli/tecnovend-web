@@ -4,7 +4,7 @@
 // sin latir (heartbeat). Este es el mismo umbral que la web pinta en rojo y el
 // que dispara el aviso por mail (services/offline-alerts.js). Si algún día lo
 // cambiamos, se cambia acá y aplica en todos lados.
-export const OFFLINE_AFTER_MS = 60 * 60_000; // 1 hora
+export const OFFLINE_AFTER_MS = 75 * 60_000; // 75 minutos (1 hora y 15 min de gracia para tolerar jitter de red/heartbeat)
 export const OFFLINE_AFTER_MIN = OFFLINE_AFTER_MS / 60_000;
 
 // Estado consolidado de la máquina, en un solo campo `state`:
