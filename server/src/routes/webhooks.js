@@ -4,6 +4,7 @@ import { verifyWebhookSignature, getPaymentAny, getOrderAny, clientByMpUser } fr
 import { processPendingRefunds } from '../services/refunds.js';
 import { armFixedQR } from '../services/qr.js';
 import { findMachine, enqueuePayment, isOurOrderRef } from '../services/payments.js';
+import { processEmployeeDiscount } from '../services/employee-discounts.js';
 
 const router = Router();
 
@@ -103,6 +104,11 @@ router.post('/mercadopago', async (req, res) => {
       else if (queued) console.log(`[webhook] ⚠ order ${dataId} → $${amount} sin pulsos (< pulse_value $${machine.pulse_value}) → reembolso`);
       await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, posIdFound: posId, machineFound: machine.id, result });
       if (queued && noDispensa) await processPendingRefunds();
+      if (queued && !noDispensa) {
+        const mpPayId = String(order.transactions?.payments?.[0]?.id || dataId);
+        processEmployeeDiscount({ paymentId: queued, mpPaymentId: mpPayId, amount, ownerClientId: machine.client_id || ownerClientId })
+          .catch(e => console.error('[webhook-emp-disc-err]', e.message));
+      }
       // Precio fijo: la orden se consumió con este pago → re-armar el QR.
       if (queued) await armFixedQR(machine);
       return;
@@ -161,10 +167,14 @@ router.post('/mercadopago', async (req, res) => {
         : pulses >= 1 ? `OK: ${pulses} pulsos → ${machine.id}`
         : `OK (sin pulsos): $${amount} < pulse_value $${machine.pulse_value} · reembolsando`;
       if (queued && pulses >= 1) console.log(`[webhook] ✓ pago ${dataId} → $${amount} → ${pulses} pulsos → ${machine.id}`);
-      else if (queued && outOfService) console.log(`[webhook] ⛔ pago ${dataId} → $${amount}: ${machine.id} fuera de servicio (${machine.status}) → reembolso`);
+      else if (queued && outOfService) console.log(`[webhook] ⛔ order ${dataId} → $${amount}: ${machine.id} fuera de servicio (${machine.status}) → reembolso`);
       else if (queued) console.log(`[webhook] ⚠ pago ${dataId} → $${amount} sin pulsos (< pulse_value $${machine.pulse_value}) → reembolso`);
       await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount }, posIdFound: posId, machineFound: machine.id, result });
       if (queued && noDispensa) await processPendingRefunds();
+      if (queued && !noDispensa) {
+        processEmployeeDiscount({ paymentId: queued, mpPaymentId: String(dataId), amount, ownerClientId: machine.client_id || ownerClientId, mpPaymentObj: payment })
+          .catch(e => console.error('[webhook-emp-disc-err]', e.message));
+      }
       // Precio fijo: la orden se consumió con este pago → re-armar el QR.
       if (queued) await armFixedQR(machine);
       return;

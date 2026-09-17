@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import db from '../db/schema.js';
 import { requireAuth, isSuperAdminUser } from '../middleware/auth.js';
 import { hashPassword } from '../services/auth.js';
+import { invalidateClientDiscountConfigCache } from '../services/employee-discounts.js';
 
 const router = Router();
 
@@ -104,23 +105,28 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 
   const {
-    name, contact_name, contact_email, contact_phone, notes,
+    name, contact_name, contact_email, contact_phone, notes, employee_discounts_enabled, default_discount_pct
   } = req.body || {};
   const client = await db.prepare('SELECT id FROM clients WHERE id = ?').get(clientId);
   if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
 
   await db.prepare(`
     UPDATE clients SET
-      name          = COALESCE(?, name),
-      contact_name  = COALESCE(?, contact_name),
-      contact_email = COALESCE(?, contact_email),
-      contact_phone = COALESCE(?, contact_phone),
-      notes         = COALESCE(?, notes)
+      name                       = COALESCE(?, name),
+      contact_name               = COALESCE(?, contact_name),
+      contact_email              = COALESCE(?, contact_email),
+      contact_phone              = COALESCE(?, contact_phone),
+      notes                      = COALESCE(?, notes),
+      employee_discounts_enabled = COALESCE(?, employee_discounts_enabled),
+      default_discount_pct       = COALESCE(?, default_discount_pct)
     WHERE id = ?
   `).run(
     name ?? null, contact_name ?? null, contact_email ?? null, contact_phone ?? null, notes ?? null,
+    isSuper && employee_discounts_enabled != null ? (employee_discounts_enabled ? 1 : 0) : null,
+    default_discount_pct != null ? Number(default_discount_pct) : null,
     clientId,
   );
+  invalidateClientDiscountConfigCache(clientId);
   res.json({ ok: true });
 });
 
@@ -247,12 +253,22 @@ router.delete('/:id', requireAuth, async (req, res) => {
 
   // Desvincular máquinas asociadas
   await db.prepare('UPDATE machines SET client_id = NULL WHERE client_id = ?').run(clientId);
+  // Obtener usuarios del cliente antes de eliminar membresías
+  const members = await db.prepare('SELECT DISTINCT user_id FROM memberships WHERE client_id = ?').all(clientId);
   // Eliminar membresías
   await db.prepare('DELETE FROM memberships WHERE client_id = ?').run(clientId);
   // Eliminar conexión MP si la hubiera
   await db.prepare('DELETE FROM mp_connections WHERE client_id = ?').run(clientId);
   // Eliminar cliente
   await db.prepare('DELETE FROM clients WHERE id = ?').run(clientId);
+
+  // Limpiar usuarios que hayan quedado sin ninguna otra organización asignada
+  for (const m of members) {
+    const remaining = await db.prepare('SELECT 1 FROM memberships WHERE user_id = ?').get(m.user_id);
+    if (!remaining) {
+      await db.prepare('DELETE FROM users WHERE id = ?').run(m.user_id);
+    }
+  }
 
   res.json({ ok: true });
 });

@@ -247,4 +247,14 @@ export const Icon = {
       <path d="M3 21l4-4M21 3l-4 4M9.5 11.5 7 14a3.5 3.5 0 0 0 5 5l2.5-2.5M11.5 9.5 14 7a3.5 3.5 0 0 1 5 5l-2.5 2.5"/>
     </svg>
   ),
+  tag: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+      <path d="M12 2H2v10l10 10 10-10L12 2z"/><circle cx="7" cy="7" r="1.5"/>
+    </svg>
+  ),
+  percent: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+      <line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>
+    </svg>
+  ),
 };

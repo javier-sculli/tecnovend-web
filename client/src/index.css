@@ -1455,6 +1455,15 @@ body {
 .clients-list .dev-row {
   grid-template-columns: 32px 1fr 1.2fr 0.7fr 28px;
 }
+.emp-list .dev-row {
+  grid-template-columns: 1.4fr 1.6fr 1fr 1fr 70px;
+}
+.top-emp-list .dev-row {
+  grid-template-columns: 1.5fr 1fr 1.2fr 1.5fr;
+}
+.logs-list .dev-row {
+  grid-template-columns: 1.2fr 1.4fr 1.2fr 1fr 0.8fr 1fr 1fr;
+}
 .dev-row.head {
   padding: 9px 18px;
   border-top: 0;

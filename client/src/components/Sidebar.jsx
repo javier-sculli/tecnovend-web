@@ -12,8 +12,7 @@ export default function Sidebar() {
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
 
-  const { orgs } = useAuth();
-  const isSuperAdmin = orgs.some(o => o.id === 'cli_87c461' && o.role === 'administrador');
+  const { isSuperAdmin, currentOrg } = useAuth();
 
   // Cantidad real de máquinas del cliente activo.
   const [machineCount, setMachineCount] = useState(null);
@@ -26,10 +25,15 @@ export default function Sidebar() {
   }, []);
 
   const navOps = [
-    { id: "maquinas",  ico: Icon.machine, label: "Máquinas",        href: "/maquinas", count: machineCount },
-    { id: "pagos",     ico: Icon.card,    label: "Pagos · MP",      href: "/pagos", dot: true },
-    { id: "reportes",  ico: Icon.chart,   label: "Reportes",        href: "/reportes" },
+    { id: "maquinas",   ico: Icon.machine, label: "Máquinas",        href: "/maquinas", count: machineCount },
+    { id: "pagos",      ico: Icon.card,    label: "Pagos · MP",      href: "/pagos", dot: true },
   ];
+
+  if (Boolean(currentOrg?.employee_discounts_enabled)) {
+    navOps.push({ id: "descuentos", ico: Icon.tag,     label: "Beneficios",       href: "/descuentos" });
+  }
+
+  navOps.push({ id: "reportes",   ico: Icon.chart,   label: "Reportes",        href: "/reportes" });
 
   if (isSuperAdmin) {
     navOps.push({ id: "clientes", ico: Icon.building, label: "Clientes", href: "/clientes" });

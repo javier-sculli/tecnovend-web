@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/schema.js';
 import { machineState } from '../services/machine-state.js';
+import { getEffectiveOrgContext } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -100,7 +101,7 @@ function generateTimeSeries(sinceStr, untilStr, dbRows, isHourly) {
 
 router.get('/summary', async (req, res) => {
   try {
-    const orgId = req.headers['x-org-id'] || null;
+    const ctx = await getEffectiveOrgContext(req);
     
     // Obtener parámetros de fecha (ISO strings)
     let since = req.query.since;
@@ -116,11 +117,28 @@ router.get('/summary', async (req, res) => {
     }
 
     // 1. Obtener la lista de máquinas filtrada por organización
-    const machinesQuery = orgId 
-      ? 'SELECT id, name, location, status, last_seen_at, last_rssi, firmware_version FROM machines WHERE client_id = ?'
-      : 'SELECT id, name, location, status, last_seen_at, last_rssi, firmware_version FROM machines';
-    const machinesParams = orgId ? [orgId] : [];
+    let machinesQuery = 'SELECT id, name, location, status, last_seen_at, last_rssi, firmware_version FROM machines';
+    let machinesParams = [];
+
+    if (!ctx.isSuperAdmin) {
+      if (!ctx.allowedClientIds || ctx.allowedClientIds.length === 0) {
+        return res.json({
+          kpis: { total_revenue: 0, total_payments: 0, total_refunded: 0, total_refund_count: 0, total_reboots: 0 },
+          fleetHealth: { online: 0, out_of_service: 0, offline: 0, total: 0 },
+          machinesList: [],
+          chartData: []
+        });
+      }
+      const placeholders = ctx.allowedClientIds.map(() => '?').join(',');
+      machinesQuery += ` WHERE client_id IN (${placeholders})`;
+      machinesParams = [...ctx.allowedClientIds];
+    } else if (ctx.activeOrgId) {
+      machinesQuery += ' WHERE client_id = ?';
+      machinesParams = [ctx.activeOrgId];
+    }
+
     const dbMachines = await db.prepare(machinesQuery).all(...machinesParams);
+
 
     // Calcular estado de salud consolidado de la flota (En línea, Fuera de servicio, Desconectada)
     const fleetHealth = {

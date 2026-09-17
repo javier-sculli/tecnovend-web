@@ -15,6 +15,7 @@ import debugRouter from './routes/debug.js';
 import docsRouter from './routes/docs.js';
 import dashboardRouter from './routes/dashboard.js';
 import firmwareRouter from './routes/firmware.js';
+import employeeDiscountsRouter from './routes/employee-discounts.js';
 
 // Inicializar BD (crea tablas y ejecuta migraciones)
 import { initDb } from './db/schema.js';
@@ -22,6 +23,7 @@ import { expireStalePulses, findPaymentsMissingPulses } from './services/pulses.
 import { flagPaymentsForRefund, processPendingRefunds } from './services/refunds.js';
 import { reconcileAll } from './services/reconcile.js';
 import { sweepOfflineAlerts } from './services/offline-alerts.js';
+import { armAllFixedQRs } from './services/qr.js';
 
 await initDb();
 
@@ -34,27 +36,39 @@ app.use(express.json());
 
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
+
+
 app.use('/api/auth', authRouter);
-// NOTA: la validación de sesión en estos endpoints está desactivada por ahora
-// (el login de la web funciona, pero la API no exige token). Reactivar cuando
-// la web nueva esté estable: app.use('/api/machines', requireAuth, ...)
-app.use('/api/machines', machinesRouter);
+app.use('/api/machines', requireAuth, machinesRouter);
 app.use('/api/clients', clientsRouter);
 app.use('/api/webhooks', webhooksRouter);
 app.use('/api/mp', mpRouter);
 app.use('/arduino', arduinoRouter);
 app.use('/api/debug', debugRouter);
 app.use('/api/docs', docsRouter);
-app.use('/api/dashboard', dashboardRouter);
-app.use('/api/firmware', firmwareRouter);
+app.use('/api/dashboard', requireAuth, dashboardRouter);
+app.use('/api/firmware', requireAuth, firmwareRouter);
+app.use('/api/employee-discounts', requireAuth, employeeDiscountsRouter);
+
 
 // Web de gestión: el mismo Express sirve el build de React (client/dist copiado
 // a server/public con `npm run build:web` desde la raíz). Va DESPUÉS de las
 // rutas API; el fallback devuelve index.html para las rutas del SPA.
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
-app.use(express.static(publicDir));
+app.use(express.static(publicDir, {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+  }
+}));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/arduino') || req.path.startsWith('/health')) return next();
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.sendFile(path.join(publicDir, 'index.html'), (err) => { if (err) next(); });
 });
 
@@ -128,3 +142,22 @@ setInterval(async () => {
     _alertingOffline = false;
   }
 }, 60_000);
+
+// Barrido de re-armado de QR con precio fijo: renueva las órdenes en Mercado Pago
+// cada 6 horas para evitar que se venzan (24h) en máquinas sin compras seguidas.
+// Se corre una vez al inicio del servidor y luego cada 6 horas.
+let _armingFixedQRs = false;
+async function sweepFixedQRs() {
+  if (_armingFixedQRs) return;
+  _armingFixedQRs = true;
+  try {
+    await armAllFixedQRs();
+  } catch (e) {
+    console.error('[fixed-qr-sweep]', e.message);
+  } finally {
+    _armingFixedQRs = false;
+  }
+}
+sweepFixedQRs();
+setInterval(sweepFixedQRs, 6 * 60 * 60 * 1000);
+

@@ -224,6 +224,7 @@ function MachineList({ machines, onOpen, onNew }) {
 /* ---------- Payments Card ---------- */
 // Estado de reembolso → badge. 'done' (o refunded_at) = ya devuelto.
 const refundView = (p) => {
+  if (p.emp_discount_pct) return { state: 'emp_discount', cls: 'ok', txt: `🎁 Desc. Empleado (-${p.emp_discount_pct}% / -$${p.emp_refund_amount})` };
   if (p.refunded_at || p.refund_status === 'done') return { state: 'done', cls: 'off', txt: '↩ Reembolsado' };
   if (p.refund_status === 'partial') return { state: 'partial', cls: 'warn', txt: `↩ Excedente devuelto (${ars(p.refunded_amount || 0)})` };
   if (p.refund_status === 'pending' || p.refund_status === 'excess_pending') return { state: 'pending', cls: 'warn', txt: '↩ Reembolsando…' };
@@ -1374,8 +1375,7 @@ function FirmwarePollingCard({ m, onUpdateMachine }) {
 function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDelete }) {
   const m = useMemo(() => machines.find(x => x.id === id), [machines, id]);
 
-  const { orgs, currentOrg } = useAuth();
-  const isSuperAdmin = orgs?.some(o => o.id === 'cli_87c461' && o.role === 'administrador');
+  const { orgs, currentOrg, isSuperAdmin } = useAuth();
   const isAdmin = isSuperAdmin || currentOrg?.role === 'administrador' || orgs?.some(o => o.id === m?.client_id && o.role === 'administrador');
 
   const [editMode, setEditMode] = useState(false);
@@ -2077,6 +2077,16 @@ export default function Maquinas() {
     if (id) {
       navigate('/maquinas', { replace: true });
     }
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mp_connected') === '1') {
+      showAlert('La cuenta de Mercado Pago fue vinculada exitosamente.', 'success', '¡Conexión exitosa!');
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('mp_error')) {
+      showAlert(decodeURIComponent(params.get('mp_error')), 'error', 'Error de Mercado Pago');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
     const load = () => apiFetch('/api/machines')
       .then(data => { if (active) setMachines(data.map(normalizeMachine)); })
       .catch(() => {})

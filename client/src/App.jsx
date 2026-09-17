@@ -6,6 +6,7 @@ import Clientes from './pages/Clientes.jsx';
 import Configuracion from './pages/Configuracion.jsx';
 import Maquinas from './pages/Maquinas.jsx';
 import Pagos from './pages/Pagos.jsx';
+import Descuentos from './pages/Descuentos.jsx';
 
 // Gate de autenticación: sin sesión → /login (recordando a dónde iba).
 function RequireAuth({ children }) {
@@ -29,6 +30,7 @@ export default function App() {
       <Route path="/maquinas" element={<RequireAuth><Maquinas /></RequireAuth>} />
       <Route path="/maquinas/:id" element={<RequireAuth><Maquinas /></RequireAuth>} />
       <Route path="/pagos" element={<RequireAuth><Pagos /></RequireAuth>} />
+      <Route path="/descuentos" element={<RequireAuth><Descuentos /></RequireAuth>} />
       <Route path="/reportes" element={<RequireAuth><Dashboard /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

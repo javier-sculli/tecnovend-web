@@ -123,20 +123,31 @@ function ChangePasswordModal({ onClose }) {
   );
 }
 
-// Selector de organización (single-select).
+// Selector de organización (single-select con buscador).
 function OrgSwitcher() {
   const { orgs, orgId, currentOrg, selectOrg } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const ref = useRef(null);
 
   useEffect(() => {
-    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        setSearch('');
+      }
+    };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, []);
 
   if (!orgs?.length) return null;
+
+  const safeOrgs = Array.isArray(orgs) ? orgs : [];
+  const filteredOrgs = safeOrgs.filter(o =>
+    o.name.toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
     <div className="org-switch" ref={ref} style={{ position: 'relative' }}>
@@ -146,24 +157,73 @@ function OrgSwitcher() {
         {Icon.chevDown}
       </button>
       {open && (
-        <div style={{ position: 'absolute', top: '110%', right: 0, zIndex: 60, minWidth: 200, background: 'var(--panel)', border: '1px solid var(--line-2)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,.12)', padding: 4 }}>
-          {orgs.map(o => (
-            <button
-              key={o.id}
-              onClick={() => {
-                selectOrg(o.id);
-                setOpen(false);
-                navigate('/maquinas', { replace: true });
-              }}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 10, padding: '8px 10px', borderRadius: 6, background: o.id === orgId ? 'var(--hover)' : 'transparent', border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--ink-1)' }}
-            >
-              <span>{o.name}</span>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <span className="spill" style={{ fontSize: 10 }}>{o.role}</span>
-                {o.id === orgId && Icon.check}
-              </span>
-            </button>
-          ))}
+        <div style={{
+          position: 'absolute', top: '110%', right: 0, zIndex: 60,
+          width: 270, background: 'var(--panel)', border: '1px solid var(--line-2)',
+          borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,.14)', padding: 6,
+          display: 'flex', flexDirection: 'column', gap: 4
+        }}>
+          {/* Buscador de clientes */}
+          <div style={{ padding: '4px 4px 6px 4px', borderBottom: '1px solid var(--line-2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg)', border: '1px solid var(--line-2)', borderRadius: 6, padding: '5px 8px' }}>
+              <span style={{ color: 'var(--ink-4)', display: 'inline-flex' }}>{Icon.search}</span>
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Buscar cliente…"
+                autoFocus
+                onClick={e => e.stopPropagation()}
+                style={{
+                  border: 'none', background: 'transparent', outline: 'none',
+                  fontSize: 12, width: '100%', color: 'var(--ink-1)'
+                }}
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setSearch(''); }}
+                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--ink-4)', padding: 0, display: 'inline-flex' }}
+                >
+                  {Icon.x}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Lista scrollable de clientes */}
+          <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {filteredOrgs.length === 0 ? (
+              <div style={{ padding: '12px 10px', fontSize: 12, color: 'var(--ink-4)', textAlign: 'center' }}>
+                Sin resultados
+              </div>
+            ) : (
+              filteredOrgs.map(o => (
+                <button
+                  key={o.id}
+                  onClick={() => {
+                    selectOrg(o.id);
+                    setOpen(false);
+                    setSearch('');
+                    navigate('/maquinas', { replace: true });
+                  }}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    width: '100%', gap: 10, padding: '8px 10px', borderRadius: 6,
+                    background: o.id === orgId ? 'var(--hover)' : 'transparent',
+                    border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--ink-1)',
+                    textAlign: 'left'
+                  }}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.name}</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    <span className="spill" style={{ fontSize: 10 }}>{o.role}</span>
+                    {o.id === orgId && Icon.check}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
         </div>
       )}
     </div>

@@ -57,9 +57,49 @@ export async function initDb() {
       contact_email  TEXT,
       contact_phone  TEXT,
       notes          TEXT,
+      employee_discounts_enabled INTEGER NOT NULL DEFAULT 0,
+      default_discount_pct INTEGER NOT NULL DEFAULT 20,
       created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS employee_discounts_enabled INTEGER NOT NULL DEFAULT 0;`);
+  await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS default_discount_pct INTEGER NOT NULL DEFAULT 20;`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS client_employees (
+      id           TEXT PRIMARY KEY,
+      client_id    TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      dni          TEXT,
+      email        TEXT,
+      name         TEXT,
+      discount_pct INTEGER,
+      status       TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),
+      created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_employees_client_email ON client_employees(client_id, LOWER(email));`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_client_employees_client_dni ON client_employees(client_id, dni);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS employee_discount_logs (
+      id              TEXT PRIMARY KEY,
+      payment_id      TEXT NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
+      client_id       TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      employee_id     TEXT REFERENCES client_employees(id) ON DELETE SET NULL,
+      payer_email     TEXT,
+      payer_dni       TEXT,
+      original_amount INTEGER NOT NULL,
+      discount_pct    INTEGER NOT NULL,
+      refund_amount   INTEGER NOT NULL,
+      mp_refund_id    TEXT,
+      status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','done','failed')),
+      error_message   TEXT,
+      created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_discount_logs_client ON employee_discount_logs(client_id, created_at);`);
+
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (

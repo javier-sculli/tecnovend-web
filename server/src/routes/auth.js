@@ -51,14 +51,14 @@ async function orgsForUser(userId) {
   const isSuper = await isSuperAdminUser(userId);
   if (isSuper) {
     return await db.prepare(`
-      SELECT c.id, c.name, COALESCE(m.role, 'administrador') AS role
+      SELECT c.id, c.name, COALESCE(c.employee_discounts_enabled, 0) AS employee_discounts_enabled, COALESCE(m.role, 'administrador') AS role
       FROM clients c
       LEFT JOIN memberships m ON m.client_id = c.id AND m.user_id = ?
       ORDER BY c.name
     `).all(userId);
   }
   return await db.prepare(`
-    SELECT c.id, c.name, m.role
+    SELECT c.id, c.name, COALESCE(c.employee_discounts_enabled, 0) AS employee_discounts_enabled, m.role
     FROM memberships m
     JOIN clients c ON c.id = m.client_id
     WHERE m.user_id = ?
@@ -66,8 +66,15 @@ async function orgsForUser(userId) {
   `).all(userId);
 }
 
-function publicUser(u) {
-  return { id: u.id, name: u.name, email: u.email, must_change_password: !!u.must_change_password };
+async function publicUser(u) {
+  const isSuper = await isSuperAdminUser(u.id);
+  return {
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    must_change_password: !!u.must_change_password,
+    is_super_admin: isSuper,
+  };
 }
 
 // POST /api/auth/login { email, password } → { token, user, orgs }
@@ -82,14 +89,14 @@ router.post('/login', async (req, res) => {
 
   const token = signToken({ sub: user.id });
   const orgs = await orgsForUser(user.id);
-  res.json({ token, user: publicUser(user), orgs });
+  res.json({ token, user: await publicUser(user), orgs });
 });
 
 // GET /api/auth/me → { user, orgs }  (requiere sesión)
 router.get('/me', requireAuth, async (req, res) => {
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const orgs = await orgsForUser(user.id);
-  res.json({ user: publicUser(user), orgs });
+  res.json({ user: await publicUser(user), orgs });
 });
 
 // POST /api/auth/logout → no-op (JWT stateless; el cliente descarta el token)

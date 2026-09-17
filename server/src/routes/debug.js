@@ -123,10 +123,29 @@ router.get('/inspect/payment/:id', async (req, res) => {
   }
 });
 
+import { requireAuth, getEffectiveOrgContext } from '../middleware/auth.js';
+
 // GET /api/debug/machines — máquinas con sus POS IDs para verificar configuración
-router.get('/machines', async (req, res) => {
-  const rows = await db.prepare('SELECT id, name, pos_id, mp_pos_id, mp_store_id, status, pulse_value, min_payment FROM machines').all();
+router.get('/machines', requireAuth, async (req, res) => {
+  let ctx;
+  try { ctx = await getEffectiveOrgContext(req); } catch (e) { return res.status(e.status || 500).json({ error: e.message }); }
+  let query = 'SELECT id, name, pos_id, mp_pos_id, mp_store_id, status, pulse_value, min_payment, client_id FROM machines';
+  let params = [];
+  if (!ctx.isSuperAdmin) {
+    if (!ctx.allowedClientIds || ctx.allowedClientIds.length === 0) return res.json([]);
+    const placeholders = ctx.allowedClientIds.map(() => '?').join(',');
+    query += ` WHERE client_id IN (${placeholders})`;
+    params = [...ctx.allowedClientIds];
+  } else if (ctx.activeOrgId) {
+    query += ' WHERE client_id = ?';
+    params = [ctx.activeOrgId];
+  }
+  const rows = await db.prepare(query).all(...params);
   res.json(rows);
 });
 
 export default router;
+
+
+
+

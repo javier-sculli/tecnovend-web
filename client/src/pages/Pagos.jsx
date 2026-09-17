@@ -346,7 +346,17 @@ export default function Pagos() {
     catch { setStatus({ connected: false }); }
   };
 
-  useEffect(() => { checkStatus(); }, []);
+  useEffect(() => {
+    checkStatus();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mp_connected') === '1') {
+      showAlert('La cuenta de Mercado Pago fue vinculada exitosamente.', 'success', '¡Conexión exitosa!');
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('mp_error')) {
+      showAlert(decodeURIComponent(params.get('mp_error')), 'error', 'Error de Mercado Pago');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   const connect = () => {
     if (!orgId) {

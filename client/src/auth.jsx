@@ -23,9 +23,10 @@ export function AuthProvider({ children }) {
     if (!getToken()) { setLoading(false); return; }
     try {
       const { user, orgs } = await apiFetch('/api/auth/me');
+      const safeOrgs = Array.isArray(orgs) ? orgs : [];
       setUser(user);
-      setOrgs(orgs);
-      ensureOrg(orgs, getOrgId());
+      setOrgs(safeOrgs);
+      ensureOrg(safeOrgs, getOrgId());
     } catch {
       setUser(null); setOrgs([]);
     } finally {
@@ -46,10 +47,11 @@ export function AuthProvider({ children }) {
     const { token, user, orgs } = await apiFetch('/api/auth/login', {
       method: 'POST', body: JSON.stringify({ email, password }),
     });
+    const safeOrgs = Array.isArray(orgs) ? orgs : [];
     setToken(token);
     setUser(user);
-    setOrgs(orgs);
-    ensureOrg(orgs, getOrgId());
+    setOrgs(safeOrgs);
+    ensureOrg(safeOrgs, getOrgId());
     return user;
   }, [ensureOrg]);
 
@@ -66,10 +68,15 @@ export function AuthProvider({ children }) {
     window.location.reload();
   }, []);
 
-  const currentOrg = orgs.find(o => o.id === orgId) || null;
+  const safeOrgs = Array.isArray(orgs) ? orgs : [];
+  const currentOrg = safeOrgs.find(o => o.id === orgId) || null;
+  const isSuperAdmin = Boolean(
+    user?.is_super_admin ||
+    safeOrgs.some(o => (o.name === 'Tecnovend' || o.id === 'cli_87c461') && o.role === 'administrador')
+  );
 
   return (
-    <AuthCtx.Provider value={{ user, orgs, orgId, currentOrg, loading, login, logout, selectOrg }}>
+    <AuthCtx.Provider value={{ user, orgs, orgId, currentOrg, isSuperAdmin, loading, login, logout, selectOrg }}>
       {children}
     </AuthCtx.Provider>
   );

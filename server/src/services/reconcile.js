@@ -1,6 +1,8 @@
 import { searchPayments, listConnectedClientIds } from './mp.js';
 import { findMachine, enqueuePayment, isOurOrderRef } from './payments.js';
 import { processPendingRefunds, flagExcessForRefund } from './refunds.js';
+import { processEmployeeDiscount } from './employee-discounts.js';
+import { armFixedQR } from './qr.js';
 
 // ─── Reconciliación de pagos ───────────────────────────────────────────────────
 // MP NO manda webhook por los pagos "libres" (el cliente tipea el monto en el QR
@@ -51,7 +53,7 @@ async function registerPayment(payment) {
   // refundPending (devuelve todo). Misma regla: no retener lo que no dispensa.
   if (!noDispensa && excess > 0) await flagExcessForRefund(queued);
 
-  return { machine, amount, pulses, excess, noDispensa };
+  return { machine, amount, pulses, excess, noDispensa, paymentId: queued };
 }
 
 // Reconcilia una cuenta conectada en una ventana de tiempo. Devuelve cuántos
@@ -73,6 +75,18 @@ async function reconcileClient(clientId, { beginDate } = {}) {
     if (!r) continue;
     nuevos++;
     if (r.noDispensa || r.excess > 0) hayReembolso = true;
+    if (!r.noDispensa) {
+      processEmployeeDiscount({
+        paymentId: r.paymentId,
+        mpPaymentId: String(p.id),
+        amount: r.amount,
+        ownerClientId: r.machine.client_id || clientId,
+        mpPaymentObj: p,
+      }).catch(e => console.error('[reconcile-emp-disc-err]', e.message));
+    }
+    if (r.machine?.qr_mode === 'fixed') {
+      armFixedQR(r.machine).catch(e => console.error('[reconcile-qr-err]', e.message));
+    }
     const extra = r.noDispensa ? ' · reembolso total' : r.excess > 0 ? ` · excedente $${r.excess} (parcial)` : '';
     console.log(`[reconcile] + pago ${p.id} $${r.amount} → ${r.machine.id} (${r.pulses}p${extra})`);
   }

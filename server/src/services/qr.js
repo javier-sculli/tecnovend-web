@@ -1,4 +1,5 @@
 import { createOrder } from './mp.js';
+import db from '../db/schema.js';
 
 // Carga en el QR de la máquina una orden por el precio fijo configurado, así el
 // cliente escanea y ve el monto sin tipearlo. Se llama al guardar la config y
@@ -20,3 +21,33 @@ export async function armFixedQR(machine) {
     return false;
   }
 }
+
+// Re-arma las órdenes de precio fijo en Mercado Pago para todas las máquinas
+// activas configuradas en modo 'fixed'. Evita que las órdenes se venzan (24h)
+// por falta de tráfico y la caja vuelva a precio libre.
+export async function armAllFixedQRs() {
+  try {
+    const machines = await db.prepare(`
+      SELECT * FROM machines
+      WHERE qr_mode = 'fixed'
+        AND status = 'active'
+        AND qr_fixed_amount IS NOT NULL
+        AND pos_id IS NOT NULL
+        AND client_id IS NOT NULL
+    `).all();
+
+    if (machines.length === 0) return 0;
+
+    let rearmed = 0;
+    for (const machine of machines) {
+      const ok = await armFixedQR(machine);
+      if (ok) rearmed++;
+    }
+    console.log(`[qr] Barrido de QR precio fijo: ${rearmed}/${machines.length} orden(es) renovadas`);
+    return rearmed;
+  } catch (e) {
+    console.error('[qr] Error en barrido de QR precio fijo:', e.message);
+    return 0;
+  }
+}
+

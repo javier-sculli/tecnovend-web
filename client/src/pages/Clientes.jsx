@@ -207,9 +207,8 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [showNewUser, setShowNewUser] = useState(false);
 
-  const { orgs, user: currentUser } = useAuth();
-  const isSuperAdmin = orgs.some(o => o.id === 'cli_87c461' && o.role === 'administrador');
-  const myRoleInThisOrg = orgs.find(o => o.id === id)?.role;
+  const { orgs, user: currentUser, isSuperAdmin } = useAuth();
+  const myRoleInThisOrg = (orgs || []).find(o => o.id === id)?.role;
   const canManageUsers = isSuperAdmin || myRoleInThisOrg === 'administrador';
 
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', description: '', confirmText: 'Confirmar', variant: 'danger', onConfirm: () => {} });
@@ -258,8 +257,8 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const dirty = ['name', 'contact_name', 'contact_email', 'contact_phone', 'notes']
-    .some(k => (form[k] || '') !== (client[k] || ''));
+  const dirty = ['name', 'contact_name', 'contact_email', 'contact_phone', 'notes', 'employee_discounts_enabled', 'default_discount_pct']
+    .some(k => (form[k] ?? '') !== (client[k] ?? ''));
 
   const save = async () => {
     setSaving(true);
@@ -272,6 +271,8 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
           contact_email: form.contact_email,
           contact_phone: form.contact_phone,
           notes: form.notes,
+          employee_discounts_enabled: form.employee_discounts_enabled ? 1 : 0,
+          default_discount_pct: form.default_discount_pct != null ? Number(form.default_discount_pct) : 20,
         }),
       });
       setClient(form);
@@ -452,6 +453,32 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
               </div>
             </div>
 
+            {/* Módulos Adicionales (Feature Flags por cliente - SOLO Super Admin) */}
+            {isSuperAdmin && (
+              <div className="card">
+                <div className="card-head">
+                  <div>
+                    <div className="card-title">Módulos adicionales</div>
+                    <div className="card-sub">Habilitación de servicios pagados por separado</div>
+                  </div>
+                </div>
+                <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(form.employee_discounts_enabled)}
+                      onChange={e => set('employee_discounts_enabled', e.target.checked ? 1 : 0)}
+                      style={{ width: 18, height: 18, accentColor: 'var(--accent)' }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Descuentos a Empleados (Beneficios Corporativos)</div>
+                      <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>Permite al cliente cargar su nómina para cashback automático en Mercado Pago</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            )}
+
             {/* Usuarios vinculados */}
             {renderUsersCard()}
           </div>
@@ -519,8 +546,7 @@ export default function Clientes() {
   const [envProd, setEnvProd] = useState(true);
   const [showNew, setShowNew] = useState(false);
 
-  const { orgs } = useAuth();
-  const isSuperAdmin = orgs.some(o => o.id === 'cli_87c461' && o.role === 'administrador');
+  const { isSuperAdmin } = useAuth();
 
   const load = async () => {
     try {

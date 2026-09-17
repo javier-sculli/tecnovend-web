@@ -4,14 +4,85 @@ import { armFixedQR } from '../services/qr.js';
 import { refundPaymentById } from '../services/refunds.js';
 import { provisionMachinePos } from '../services/mp.js';
 import { machineState } from '../services/machine-state.js';
+import { getEffectiveOrgContext } from '../middleware/auth.js';
 
 const router = Router();
 
+async function checkMachineAccess(req, res, machineId) {
+  let ctx;
+  try {
+    ctx = await getEffectiveOrgContext(req);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+    return null;
+  }
+
+  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(machineId);
+  if (!machine) {
+    res.status(404).json({ error: 'Máquina no encontrada' });
+    return null;
+  }
+
+  if (!ctx.isSuperAdmin) {
+    if (!machine.client_id || !ctx.allowedClientIds.includes(machine.client_id)) {
+      res.status(403).json({ error: 'No tenés acceso a esta máquina' });
+      return null;
+    }
+  }
+
+  return { machine, ctx };
+}
+
+async function findMachineBySerial(serial) {
+  if (!serial) return null;
+  const clean = serial.trim();
+  if (!clean) return null;
+
+  let existing = await db.prepare(
+    'SELECT * FROM machines WHERE arduino_id = ? OR device_serial = ? OR id = ?'
+  ).get(clean, clean, clean);
+  if (existing) return existing;
+
+  const digitsMatch = clean.match(/^(?:ARD[ -]?)?0*(\d+)$/i);
+  if (digitsMatch) {
+    const num = digitsMatch[1];
+    const padded = 'ARD-' + num.padStart(5, '0');
+    const short = 'ARD-' + num;
+    const space = 'ARD ' + num;
+    existing = await db.prepare(
+      'SELECT * FROM machines WHERE arduino_id = ? OR device_serial = ? OR arduino_id = ? OR device_serial = ? OR arduino_id = ? OR device_serial = ? OR arduino_id = ? OR device_serial = ?'
+    ).get(padded, padded, short, short, space, space, num, num);
+    if (existing) return existing;
+  }
+
+  return null;
+}
+
 router.get('/', async (req, res) => {
-  // Scoping opcional por organización (header x-org-id). La validación de
-  // membresía está desactivada por ahora junto con el requireAuth global.
-  const orgId = req.headers['x-org-id'] || null;
+  let ctx;
+  try {
+    ctx = await getEffectiveOrgContext(req);
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: err.message });
+  }
+
   const todayStr = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  
+  let whereClause = '';
+  let queryParams = [];
+
+  if (!ctx.isSuperAdmin) {
+    if (!ctx.allowedClientIds || ctx.allowedClientIds.length === 0) {
+      return res.json([]);
+    }
+    const placeholders = ctx.allowedClientIds.map(() => '?').join(',');
+    whereClause = `WHERE m.client_id IN (${placeholders})`;
+    queryParams = [...ctx.allowedClientIds];
+  } else if (ctx.activeOrgId) {
+    whereClause = 'WHERE m.client_id = ?';
+    queryParams = [ctx.activeOrgId];
+  }
+
   const machines = await db.prepare(`
     SELECT m.*,
       (SELECT COUNT(*) FROM payments p
@@ -27,9 +98,10 @@ router.get('/', async (req, res) => {
         WHERE p.machine_id = m.id AND p.status = 'approved'
           AND p.created_at >= '${todayStr}') AS today_count
     FROM machines m
-    ${orgId ? 'WHERE m.client_id = ?' : ''}
+    ${whereClause}
     ORDER BY m.created_at DESC
-  `).all(...(orgId ? [orgId] : []));
+  `).all(...queryParams);
+
   res.json(machines.map(m => ({
     ...m,
     channels_config: JSON.parse(m.channels_config),
@@ -38,6 +110,13 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
+  let ctx;
+  try {
+    ctx = await getEffectiveOrgContext(req);
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: err.message });
+  }
+
   const {
     id, name, location, address, model, device_serial, arduino_id, api_key,
     pos_id, terminal_id, mp_pos_id, mp_store_id, mp_store_name, client_id,
@@ -46,18 +125,86 @@ router.post('/', async (req, res) => {
     qr_mode = 'dynamic', qr_fixed_amount,
     poll_interval_s = 3,
   } = req.body;
+
   if (!id || !name) return res.status(400).json({ error: 'id y name son requeridos' });
   if (!['dynamic', 'fixed'].includes(qr_mode)) return res.status(400).json({ error: "qr_mode debe ser 'dynamic' o 'fixed'" });
 
-  // El serial de la placa ES el identificador del Arduino: arduino_id y
-  // device_serial son lo mismo. Aceptamos cualquiera de los dos del front y
-  // guardamos el mismo valor en ambas columnas.
+  let targetClientId = client_id || ctx.activeOrgId || (ctx.allowedClientIds?.length === 1 ? ctx.allowedClientIds[0] : null);
+
+  if (!targetClientId) {
+    return res.status(400).json({ error: 'Debes especificar o seleccionar un cliente (client_id) para la máquina' });
+  }
+
+  if (!ctx.isSuperAdmin) {
+    if (!ctx.allowedClientIds.includes(targetClientId)) {
+      return res.status(403).json({ error: 'No tenés permisos para agregar máquinas a esta organización' });
+    }
+  }
+
   const serial = (arduino_id ?? device_serial)?.trim() || null;
 
   if (serial) {
-    const existing = await db.prepare('SELECT id, name FROM machines WHERE arduino_id = ? OR device_serial = ?').get(serial, serial);
+    const existing = await findMachineBySerial(serial);
     if (existing) {
-      return res.status(400).json({ error: `El Arduino ID/Serial "${serial}" ya está asignado a la máquina "${existing.name}" (ID: ${existing.id})` });
+      if (existing.client_id && existing.client_id !== targetClientId) {
+        const owner = await db.prepare('SELECT name FROM clients WHERE id = ?').get(existing.client_id);
+        const ownerName = owner ? owner.name : 'otra organización';
+        return res.status(400).json({
+          error: `El Arduino ID/Serial "${serial}" ya está asignado a la máquina "${existing.name}" del cliente "${ownerName}".`
+        });
+      }
+
+      // Si la máquina está huérfana (client_id es NULL) o pertenece a esta misma organización:
+      // Reasignar / adoptar la máquina existente actualizando sus datos
+      const targetSerial = existing.arduino_id || existing.device_serial || serial;
+
+      await db.prepare(`
+        UPDATE machines SET
+          name              = COALESCE(?, name),
+          location          = COALESCE(?, location),
+          address           = COALESCE(?, address),
+          model             = COALESCE(?, model),
+          device_serial     = ?,
+          arduino_id        = ?,
+          api_key           = COALESCE(?, api_key),
+          pos_id            = COALESCE(?, pos_id),
+          terminal_id       = COALESCE(?, terminal_id),
+          mp_pos_id         = COALESCE(?, mp_pos_id),
+          mp_store_id       = COALESCE(?, mp_store_id),
+          mp_store_name     = COALESCE(?, mp_store_name),
+          client_id         = ?,
+          pulse_value       = ?,
+          min_payment       = ?,
+          channels_config   = ?,
+          wifi_ssid         = COALESCE(?, wifi_ssid),
+          wifi_user         = COALESCE(?, wifi_user),
+          wifi_password     = COALESCE(?, wifi_password),
+          qr_mode           = ?,
+          qr_fixed_amount   = ?,
+          poll_interval_s   = ?
+        WHERE id = ?
+      `).run(
+        name ?? null, location ?? null, address ?? null, model ?? null,
+        targetSerial, targetSerial, api_key ?? null,
+        pos_id ?? null, terminal_id ?? null, mp_pos_id ?? null,
+        mp_store_id ?? null, mp_store_name ?? null, targetClientId,
+        pulse_value, min_payment, JSON.stringify(channels_config),
+        wifi_ssid ?? null, wifi_user ?? null, wifi_password ?? null,
+        qr_mode, qr_fixed_amount ?? null, Number(poll_interval_s) || 3,
+        existing.id
+      );
+
+      let mp = null, mp_error = null;
+      try {
+        const updated = await db.prepare('SELECT * FROM machines WHERE id = ?').get(existing.id);
+        mp = await provisionMachinePos(updated);
+        console.log(`[machines] ✓ ${existing.id} adoptada/reasignada a cliente ${targetClientId} y provisionada en MP → caja ${mp.mp_pos_id}`);
+      } catch (e) {
+        mp_error = e.message;
+        console.error(`[machines] ✗ provisión MP de ${existing.id} falló: ${e.message}`);
+      }
+
+      return res.status(200).json({ id: existing.id, mp, mp_error, reassigned: true });
     }
   }
 
@@ -73,15 +220,12 @@ router.post('/', async (req, res) => {
     id, name, location ?? null, address ?? null, model ?? null,
     serial, serial, api_key ?? null,
     pos_id ?? null, terminal_id ?? null, mp_pos_id ?? null,
-    mp_store_id ?? null, mp_store_name ?? null, client_id ?? null,
+    mp_store_id ?? null, mp_store_name ?? null, targetClientId ?? null,
     pulse_value, min_payment, JSON.stringify(channels_config),
     wifi_ssid ?? null, wifi_user ?? null, wifi_password ?? null,
     qr_mode, qr_fixed_amount ?? null, Number(poll_interval_s) || 3,
   );
 
-  // Provisión automática en MP: local default compartido + caja propia de la
-  // máquina, asociada acá mismo. Best-effort: la máquina queda creada aunque MP
-  // falle (se puede reintentar desde el detalle → solapa Pagos).
   let mp = null, mp_error = null;
   try {
     const created = await db.prepare('SELECT * FROM machines WHERE id = ?').get(id);
@@ -96,8 +240,9 @@ router.post('/', async (req, res) => {
 });
 
 router.get('/:id', async (req, res) => {
-  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.id);
-  if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
+  const { machine } = access;
 
   const todayStr = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
   const todayStats = await db.prepare(`
@@ -118,6 +263,10 @@ router.get('/:id', async (req, res) => {
 });
 
 router.put('/:id', async (req, res) => {
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
+  const { machine, ctx } = access;
+
   const {
     name, location, address, model, device_serial, api_key,
     pos_id, terminal_id, mp_pos_id, mp_store_id, mp_store_name, client_id,
@@ -128,10 +277,7 @@ router.put('/:id', async (req, res) => {
     target_fw_version, ota_url,
     poll_interval_s,
   } = req.body;
-  const machine = await db.prepare('SELECT id FROM machines WHERE id = ?').get(req.params.id);
-  if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
 
-  // Validar unicidad del Arduino ID/Serial si se intenta modificar
   let newSerial = undefined;
   const hasArduinoId = Object.prototype.hasOwnProperty.call(req.body, 'arduino_id');
   const hasDeviceSerial = Object.prototype.hasOwnProperty.call(req.body, 'device_serial');
@@ -143,9 +289,13 @@ router.put('/:id', async (req, res) => {
   }
 
   if (newSerial !== undefined && newSerial !== null) {
-    const existing = await db.prepare('SELECT id, name FROM machines WHERE (arduino_id = ? OR device_serial = ?) AND id != ?').get(newSerial, newSerial, req.params.id);
-    if (existing) {
-      return res.status(400).json({ error: `El Arduino ID/Serial "${newSerial}" ya está asignado a la máquina "${existing.name}" (ID: ${existing.id})` });
+    const existing = await findMachineBySerial(newSerial);
+    if (existing && existing.id !== req.params.id) {
+      if (existing.client_id) {
+        const owner = await db.prepare('SELECT name FROM clients WHERE id = ?').get(existing.client_id);
+        const ownerName = owner ? owner.name : 'otra organización';
+        return res.status(400).json({ error: `El Arduino ID/Serial "${newSerial}" ya está asignado a la máquina "${existing.name}" del cliente "${ownerName}".` });
+      }
     }
   }
 
@@ -156,6 +306,12 @@ router.put('/:id', async (req, res) => {
     const amt = Number(qr_fixed_amount);
     if (!Number.isInteger(amt) || amt < 15) {
       return res.status(400).json({ error: 'qr_fixed_amount requerido y debe ser >= $15 (mínimo de Mercado Pago)' });
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body, 'client_id') && client_id !== undefined) {
+    if (!ctx.isSuperAdmin && client_id && !ctx.allowedClientIds.includes(client_id)) {
+      return res.status(403).json({ error: 'No tenés acceso a esa organización' });
     }
   }
 
@@ -172,7 +328,6 @@ router.put('/:id', async (req, res) => {
       mp_pos_id         = COALESCE(?, mp_pos_id),
       mp_store_id       = COALESCE(?, mp_store_id),
       mp_store_name     = COALESCE(?, mp_store_name),
-      client_id         = COALESCE(?, client_id),
       pulse_value       = COALESCE(?, pulse_value),
       min_payment       = COALESCE(?, min_payment),
       channels_config   = COALESCE(?, channels_config),
@@ -190,7 +345,7 @@ router.put('/:id', async (req, res) => {
     name ?? null, location ?? null, address ?? null, model ?? null,
     device_serial ?? null, api_key ?? null,
     pos_id ?? null, terminal_id ?? null, mp_pos_id ?? null,
-    mp_store_id ?? null, mp_store_name ?? null, client_id ?? null,
+    mp_store_id ?? null, mp_store_name ?? null,
     pulse_value ?? null, min_payment ?? null,
     channels_config ? JSON.stringify(channels_config) : null,
     status ?? null,
@@ -201,35 +356,25 @@ router.put('/:id', async (req, res) => {
     req.params.id,
   );
 
-  // arduino_id (= serial de placa) necesita manejo explícito: COALESCE no permite
-  // desvincular (null) ni dejarlo vacío. Si el body incluye la clave, la aplicamos
-  // tal cual a ambas columnas (arduino_id y device_serial son lo mismo).
-  // Sincronizar y actualizar arduino_id y device_serial si se modificaron
   if (newSerial !== undefined) {
     await db.prepare('UPDATE machines SET arduino_id = ?, device_serial = ? WHERE id = ?').run(newSerial, newSerial, req.params.id);
   }
 
-  // client_id necesita manejo explícito: COALESCE no permite desvincular (null).
-  // Si el body incluye la clave, la aplicamos tal cual (puede ser null = sin cliente).
   if (Object.prototype.hasOwnProperty.call(req.body, 'client_id')) {
     await db.prepare('UPDATE machines SET client_id = ? WHERE id = ?')
       .run(client_id ?? null, req.params.id);
   }
 
-  // target_fw_version necesita manejo explícito para permitir poner en null.
   if (Object.prototype.hasOwnProperty.call(req.body, 'target_fw_version')) {
     await db.prepare('UPDATE machines SET target_fw_version = ? WHERE id = ?')
       .run(target_fw_version || null, req.params.id);
   }
 
-  // ota_url necesita manejo explícito para permitir poner en null.
   if (Object.prototype.hasOwnProperty.call(req.body, 'ota_url')) {
     await db.prepare('UPDATE machines SET ota_url = ? WHERE id = ?')
       .run(ota_url || null, req.params.id);
   }
 
-  // Si la config de QR quedó en precio fijo, cargamos la orden en el QR ahora.
-  // Best-effort: el guardado no falla si MP no responde (queda qr_armed: false).
   let qr_armed;
   if (qr_mode !== undefined || qr_fixed_amount !== undefined) {
     const updated = await db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.id);
@@ -239,11 +384,9 @@ router.put('/:id', async (req, res) => {
   res.json({ ok: true, ...(qr_armed !== undefined ? { qr_armed } : {}) });
 });
 
-// Elimina la máquina y todo lo que cuelga de ella (FK: hay que borrar hijos
-// primero). No toca la caja en MP — el local/caja del cliente quedan en su cuenta.
 router.delete('/:id', async (req, res) => {
-  const machine = await db.prepare('SELECT id FROM machines WHERE id = ?').get(req.params.id);
-  if (!machine) return res.status(404).json({ error: 'Máquina no encontrada' });
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
 
   try {
     await db.exec('BEGIN');
@@ -263,13 +406,17 @@ router.delete('/:id', async (req, res) => {
 });
 
 router.get('/:id/payments', async (req, res) => {
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
+
   const payments = await db.prepare('SELECT * FROM payments WHERE machine_id = ? ORDER BY created_at DESC').all(req.params.id);
   res.json(payments);
 });
 
-// Cola de pulsos de la máquina: pendientes y entregados arriba (en vuelo),
-// luego el resto. La expiración la maneja el barrido periódico de index.js.
 router.get('/:id/pulses', async (req, res) => {
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
+
   const limit = Math.min(Number(req.query.limit) || 50, 500);
   const pulses = await db.prepare(`
     SELECT id, machine_id, payment_id, channel, count, status, created_at, acked_at, expires_at
@@ -283,10 +430,10 @@ router.get('/:id/pulses', async (req, res) => {
   res.json(pulses);
 });
 
-// Eliminar un pulso de la cola (cancelación manual desde la web).
-// Con ?refund=1 además devuelve el pago asociado en MP (idempotente; si MP
-// falla queda 'failed' y el barrido lo reintenta solo).
 router.delete('/:id/pulses/:pulseId', async (req, res) => {
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
+
   const pulse = await db.prepare('SELECT id, payment_id, status FROM pulse_queue WHERE id = ? AND machine_id = ?')
     .get(req.params.pulseId, req.params.id);
   if (!pulse) return res.status(404).json({ error: 'Pulso no encontrado' });
@@ -301,32 +448,26 @@ router.delete('/:id/pulses/:pulseId', async (req, res) => {
   res.json({ ok: true, refunded: r.ok === true, refund_error: r.error || null });
 });
 
-// Feed de eventos unificado de la máquina. Junta tres fuentes:
-//   - machine_events: heartbeat / config / service (logueados por el firmware)
-//   - pulse_queue:    ACK de pulsos confirmados (ya persistido en prod)
-//   - payments:       pagos aprobados/rechazados
-// Devuelve una lista normalizada { type, kind, title, desc, at } ordenada por fecha.
 router.get('/:id/events', async (req, res) => {
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
+
   const id = req.params.id;
   const limit = Math.min(Number(req.query.limit) || 60, 500);
 
   const out = [];
 
-  // 1) Eventos del firmware
   const events = await db.prepare(
     "SELECT type, detail, created_at FROM machine_events WHERE machine_id = ? AND type != 'status_log'"
   ).all(id);
 
-  // `reason` (heartbeatReason en el firmware): motivo del heartbeat en sí.
   const reasonTranslations = {
     startup: 'inicio (startup)',
     out_of_service: 'fuera de servicio',
     recovered: 'recuperación de servicio',
     sale_timeout: 'timeout de venta',
   };
-  // `reset_reason_text` (esp_reset_reason(), api.cpp `resetReasonText()`): motivo
-  // del último reinicio del ESP32. Viaja en TODOS los heartbeats (no solo el de
-  // startup), así que solo la mostramos/coloreamos en el heartbeat de inicio —
+
   function fmtUptimeServer(sec) {
     if (sec == null) return '—';
     const d = Math.floor(sec / 86400);
@@ -353,10 +494,6 @@ router.get('/:id/events', async (req, res) => {
     sdio: 'Reinicio por SDIO',
     unknown: 'Reinicio por causa no especificada',
   };
-  // Reinicios que delatan un problema (crash/hang/alimentación) vs. los normales
-  // (se lo espera al enchufar la máquina o reprogramarla).
-  const BAD_RESET_REASONS = new Set(['panic', 'interrupt_wdt', 'task_wdt', 'watchdog', 'brownout', 'software: wifi stale']);
-  const WARN_RESET_REASONS = new Set(['sdio', 'unknown']);
 
   for (const e of events) {
     let d = {};
@@ -415,7 +552,6 @@ router.get('/:id/events', async (req, res) => {
     }
   }
 
-  // 2) ACK de pulsos (derivado de pulse_queue)
   const acks = await db.prepare(
     `SELECT id, channel, count, acked_at FROM pulse_queue
      WHERE machine_id = ? AND status = 'acked' AND acked_at IS NOT NULL`
@@ -429,7 +565,6 @@ router.get('/:id/events', async (req, res) => {
     });
   }
 
-  // 3) Pagos
   const payments = await db.prepare(
     'SELECT mp_payment_id, amount, status, pulses_calculated, created_at FROM payments WHERE machine_id = ?'
   ).all(id);
@@ -448,8 +583,10 @@ router.get('/:id/events', async (req, res) => {
   res.json(out.slice(0, limit));
 });
 
-// Obtener logs de estado y diagnóstico de la máquina
 router.get('/:id/status-logs', async (req, res) => {
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
+
   const limit = Math.min(Number(req.query.limit) || 100, 1000);
   const logs = await db.prepare(`
     SELECT id, detail, created_at

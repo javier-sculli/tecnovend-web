@@ -71,8 +71,10 @@ pulsos = floor(monto_pagado / pulse_value)
 ## API del Servidor
 
 **URLs de producción (Railway):**
-- API + Web de gestión (servicio unificado, un solo deploy): `https://www.vendpoint.com.ar/` (custom domain; la URL de Railway `tecnovend-api-production.up.railway.app` sigue funcionando también).
-- El Express de la API sirve también el build de React (`server/public`, generado con `npm run build:web`). El servicio `tecnovend-web` quedó obsoleto.
+- API + Web de gestión: `https://www.vendpoint.com.ar/` (custom domain y `tecnovend-api-production.up.railway.app`).
+- **Arduino Firmware TCP Proxy (ESENCIAL):** `http://yamabiko.proxy.rlwy.net:58436` (Las placas ESP32 v0.0.23 comunican por HTTP plano en este puerto TCP proxy para evitar sobrecarga SSL).
+- El Express de la API sirve también el build de React (`server/public`, generado con `npm run build:web`).
+
 
 ### Webhooks
 ```

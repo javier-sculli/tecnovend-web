@@ -7,7 +7,9 @@ export async function isSuperAdminUser(userId) {
   const check = await db.prepare(`
     SELECT 1 FROM memberships m
     JOIN clients c ON c.id = m.client_id
-    WHERE m.user_id = ? AND (c.name = 'Tecnovend' OR c.id = 'cli_87c461') AND m.role = 'administrador'
+    WHERE m.user_id = ? 
+      AND (c.name = 'Tecnovend' OR c.id = 'cli_87c461')
+      AND m.role = 'administrador'
   `).get(userId);
   return !!check;
 }
@@ -48,3 +50,58 @@ export function requireOrgMember(getClientId) {
     next();
   };
 }
+
+// Resuelve el contexto de organización y la lista de IDs de clientes permitidos para el usuario.
+// Retorna: { isSuperAdmin: boolean, activeOrgId: string|null, allowedClientIds: string[]|null }
+// NOTA: Si allowedClientIds es null, significa Super Admin sin filtro forzado (acceso a todo).
+export async function getEffectiveOrgContext(req) {
+  const userId = req.user?.id;
+  if (!userId) {
+    const err = new Error('No autenticado');
+    err.status = 401;
+    throw err;
+  }
+
+  const isSuper = await isSuperAdminUser(userId);
+  const requestedOrgId = req.headers['x-org-id'] || req.query.org || req.query.clientId || null;
+
+  if (isSuper) {
+    return {
+      isSuperAdmin: true,
+      activeOrgId: requestedOrgId,
+      allowedClientIds: requestedOrgId ? [requestedOrgId] : null,
+    };
+  }
+
+  // Usuario normal (no super admin)
+  const rows = await db.prepare('SELECT client_id FROM memberships WHERE user_id = ?').all(userId);
+  const userClientIds = rows.map(r => r.client_id).filter(Boolean);
+
+  if (userClientIds.length === 0) {
+    return {
+      isSuperAdmin: false,
+      activeOrgId: null,
+      allowedClientIds: [],
+    };
+  }
+
+  if (requestedOrgId) {
+    if (!userClientIds.includes(requestedOrgId)) {
+      const err = new Error('No pertenecés a esta organización');
+      err.status = 403;
+      throw err;
+    }
+    return {
+      isSuperAdmin: false,
+      activeOrgId: requestedOrgId,
+      allowedClientIds: [requestedOrgId],
+    };
+  }
+
+  return {
+    isSuperAdmin: false,
+    activeOrgId: userClientIds.length === 1 ? userClientIds[0] : null,
+    allowedClientIds: userClientIds,
+  };
+}
+

@@ -1,8 +1,11 @@
 # API del Arduino — VendPoint
 
-**Base URL:** `https://www.vendpoint.com.ar`
+**Base URL en producción (Firmware ESP32 v0.0.23):** `http://yamabiko.proxy.rlwy.net:58436` (Railway TCP Proxy para comunicación ultra rápida HTTP sin sobrecarga SSL)  
+**Base URL alternativa / Web:** `https://www.vendpoint.com.ar`
 
----
+> [!IMPORTANT]
+> Las placas físicas ESP32 tienen hardcodeado en `config.h` del firmware la dirección del TCP Proxy de Railway (`http://yamabiko.proxy.rlwy.net:58436`). El servicio de Railway `tecnovend-api` debe mantenerse activo en el puerto `58436` para garantizar la conectividad de los Arduinos.
+
 
 ## Autenticación
 
