@@ -77,28 +77,38 @@ router.get('/poll/:arduinoId', async (req, res) => {
   // bloquea esta respuesta; el pago recién entrado aparece en el poll siguiente.
   reconcileMachineSoon(machine);
 
-  // Marcar como entregados
-  const pending = await db.prepare(`
-    SELECT id, channel, count FROM pulse_queue
-    WHERE machine_id = ? AND status = 'pending'
+  // Buscar pulsos pendientes o entregados no confirmados que requieran reintento
+  // (caso microcorte de red / socket cerrado antes de procesar el body o de recibir el ACK).
+  // Ventana de re-entrega: pulsos 'pending', o 'delivered' entregados hace >= 12s sin ACK y antes de expirar.
+  const pulsesToSend = await db.prepare(`
+    SELECT id, channel, count, status FROM pulse_queue
+    WHERE machine_id = ?
+      AND expires_at > datetime('now')
+      AND (
+        status = 'pending'
+        OR (status = 'delivered' AND (delivered_at IS NULL OR delivered_at < datetime('now', '-12 seconds')))
+      )
     ORDER BY created_at ASC
   `).all(machineId);
 
-  if (pending.length > 0) {
-    const ids = pending.map(p => p.id);
-    await db.prepare(`UPDATE pulse_queue SET status = 'delivered' WHERE id IN (${ids.map(() => '?').join(',')})`)
-      .run(...ids);
+  if (pulsesToSend.length > 0) {
+    const ids = pulsesToSend.map(p => p.id);
+    await db.prepare(`
+      UPDATE pulse_queue 
+      SET status = 'delivered', delivered_at = datetime('now') 
+      WHERE id IN (${ids.map(() => '?').join(',')})
+    `).run(...ids);
   }
 
   newrelic.addCustomAttributes({
-    pending_pulses_count: pending.length,
-    pending_pulses_ids: pending.map(p => p.id).join(',')
+    pending_pulses_count: pulsesToSend.length,
+    pending_pulses_ids: pulsesToSend.map(p => p.id).join(',')
   });
 
   res.json({
     machine_id: machineId,
     poll_interval_s: machine.poll_interval_s ?? 3,
-    pending_pulses: pending.map(p => ({ pulse_id: p.id, channel: p.channel, count: p.count }))
+    pending_pulses: pulsesToSend.map(p => ({ pulse_id: p.id, channel: p.channel, count: p.count }))
   });
 });
 

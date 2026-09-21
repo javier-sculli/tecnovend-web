@@ -170,6 +170,7 @@ export async function initDb() {
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS target_fw_version TEXT;`);
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS ota_url TEXT;`);
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS poll_interval_s INTEGER NOT NULL DEFAULT 3;`);
+  await pool.query(`ALTER TABLE pulse_queue ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP;`);
 
 
   await pool.query(`
