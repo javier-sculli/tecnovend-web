@@ -77,19 +77,31 @@ router.get('/poll/:arduinoId', async (req, res) => {
   // bloquea esta respuesta; el pago recién entrado aparece en el poll siguiente.
   reconcileMachineSoon(machine);
 
-  // Buscar pulsos pendientes o entregados no confirmados que requieran reintento
-  // (caso microcorte de red / socket cerrado antes de procesar el body o de recibir el ACK).
-  // Ventana de re-entrega: pulsos 'pending', o 'delivered' entregados hace >= 12s sin ACK y antes de expirar.
-  const pulsesToSend = await db.prepare(`
-    SELECT id, channel, count, status FROM pulse_queue
-    WHERE machine_id = ?
-      AND expires_at > datetime('now')
-      AND (
-        status = 'pending'
-        OR (status = 'delivered' AND (delivered_at IS NULL OR delivered_at < datetime('now', '-12 seconds')))
-      )
-    ORDER BY created_at ASC
-  `).all(machineId);
+  // Salvaguarda para firmware previo: la re-entrega de pulsos ya entregados ('delivered')
+  // solo se habilita para máquinas con firmware >= 0.0.25 (que cuentan con buffer de
+  // deduplicación en memoria para evitar doble dispensado).
+  // Las placas con firmware viejo solo reciben pulsos 'pending' (comportamiento original 100% seguro).
+  const fw = String(machine.firmware_version || '');
+  const supportsDedup = fw >= '0.0.25';
+
+  const pulsesQuery = supportsDedup
+    ? `
+      SELECT id, channel, count, status FROM pulse_queue
+      WHERE machine_id = ?
+        AND expires_at > datetime('now')
+        AND (
+          status = 'pending'
+          OR (status = 'delivered' AND (delivered_at IS NULL OR delivered_at < datetime('now', '-12 seconds')))
+        )
+      ORDER BY created_at ASC
+    `
+    : `
+      SELECT id, channel, count, status FROM pulse_queue
+      WHERE machine_id = ? AND status = 'pending'
+      ORDER BY created_at ASC
+    `;
+
+  const pulsesToSend = await db.prepare(pulsesQuery).all(machineId);
 
   if (pulsesToSend.length > 0) {
     const ids = pulsesToSend.map(p => p.id);
