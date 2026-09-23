@@ -143,15 +143,16 @@ setInterval(async () => {
   }
 }, 60_000);
 
-// Barrido de re-armado de QR con precio fijo: renueva las órdenes en Mercado Pago
-// cada 6 horas para evitar que se venzan (24h) en máquinas sin compras seguidas.
-// Se corre una vez al inicio del servidor y luego cada 6 horas.
+// Barrido de seguridad de QR con precio fijo: se ejecuta una vez al día como
+// red pasiva (safety net), re-armando ÚNICAMENTE si la máquina no tiene una orden fija
+// activa en Mercado Pago (el ciclo de vida normal lo manejan en tiempo real los webhooks
+// de order.processed, order.expired y order.canceled).
 let _armingFixedQRs = false;
 async function sweepFixedQRs() {
   if (_armingFixedQRs) return;
   _armingFixedQRs = true;
   try {
-    await armAllFixedQRs();
+    await armAllFixedQRs({ force: false });
   } catch (e) {
     console.error('[fixed-qr-sweep]', e.message);
   } finally {
@@ -159,5 +160,5 @@ async function sweepFixedQRs() {
   }
 }
 sweepFixedQRs();
-setInterval(sweepFixedQRs, 6 * 60 * 60 * 1000);
+setInterval(sweepFixedQRs, 24 * 60 * 60 * 1000);
 

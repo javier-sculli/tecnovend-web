@@ -3,7 +3,7 @@ import newrelic from 'newrelic';
 import db from '../db/schema.js';
 import { verifyWebhookSignature, getPaymentAny, getOrderAny, clientByMpUser } from '../services/mp.js';
 import { processPendingRefunds } from '../services/refunds.js';
-import { armFixedQR } from '../services/qr.js';
+import { armFixedQR, reportQrMiss } from '../services/qr.js';
 import { findMachine, enqueuePayment, isOurOrderRef } from '../services/payments.js';
 import { processEmployeeDiscount } from '../services/employee-discounts.js';
 
@@ -110,8 +110,52 @@ router.post('/mercadopago', async (req, res) => {
         processEmployeeDiscount({ paymentId: queued, mpPaymentId: mpPayId, amount, ownerClientId: machine.client_id || ownerClientId })
           .catch(e => console.error('[webhook-emp-disc-err]', e.message));
       }
-      // Precio fijo: la orden se consumió con este pago → re-armar el QR.
-      if (queued) await armFixedQR(machine);
+      // Precio fijo: la orden se consumió con este pago → re-armar el QR siempre si es fija.
+      if (machine.qr_mode === 'fixed') await armFixedQR(machine);
+      return;
+    }
+
+    // ── Notificación de Order expirada o cancelada (QR de precio fijo) ─────────
+    // Cuando una orden fija vence (a las 24hs) o se cancela, MP quita la orden del
+    // POS físico dejando la caja en modo libre. La re-armamos de inmediato en <1s.
+    if (type === 'order' && (action === 'order.expired' || action === 'order.canceled')) {
+      const posId = req.body?.data?.external_pos_id || '';
+      let machine = await findMachine(posId);
+
+      // Fallback 1: extraer machine_id de external_reference ("tv_machine_XXX_...")
+      const extRef = req.body?.data?.external_reference || req.query?.['data.external_reference'] || '';
+      if (!machine && extRef.startsWith('tv_')) {
+        const mId = extRef.replace(/^tv_/, '').replace(/_\d+$/, '');
+        if (mId) {
+          machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(mId);
+        }
+      }
+
+      // Fallback 2: consultar la orden a MP
+      if (!machine && dataId) {
+        try {
+          const { order } = await getOrderAny(dataId, ownerClientId);
+          const pId = order.config?.qr?.external_pos_id || order.config?.point?.external_pos_id || '';
+          machine = await findMachine(pId);
+        } catch (_) {}
+      }
+
+      if (!machine) {
+        console.warn(`[webhook] order ${dataId} (${action}) sin máquina para pos_id="${posId}" extRef="${extRef}"`);
+        await logWebhook({ type, action, dataId, rawBody: req.body, posIdFound: posId, result: `SKIP: sin máquina (${action})` });
+        return;
+      }
+
+      if (machine.qr_mode === 'fixed') {
+        const rearmed = await armFixedQR(machine);
+        const resText = rearmed 
+          ? `OK: QR re-armado tras ${action} ($${machine.qr_fixed_amount})`
+          : `WARN: falló re-armar QR tras ${action}`;
+        console.log(`[webhook] ${resText} → ${machine.id}`);
+        await logWebhook({ type, action, dataId, rawBody: req.body, posIdFound: posId || machine.pos_id, machineFound: machine.id, result: resText });
+      } else {
+        await logWebhook({ type, action, dataId, rawBody: req.body, posIdFound: posId || machine.pos_id, machineFound: machine.id, result: `IGNORADO: máquina en modo ${machine.qr_mode}` });
+      }
       return;
     }
 
@@ -176,8 +220,18 @@ router.post('/mercadopago', async (req, res) => {
         processEmployeeDiscount({ paymentId: queued, mpPaymentId: String(dataId), amount, ownerClientId: machine.client_id || ownerClientId, mpPaymentObj: payment })
           .catch(e => console.error('[webhook-emp-disc-err]', e.message));
       }
-      // Precio fijo: la orden se consumió con este pago → re-armar el QR.
-      if (queued) await armFixedQR(machine);
+      // Precio fijo: la orden se consumió con este pago → re-armar el QR siempre si es fija.
+      if (machine.qr_mode === 'fixed') {
+        reportQrMiss({
+          machineId: machine.id,
+          posId: posId || machine.pos_id,
+          clientId: machine.client_id || ownerClientId,
+          reason: 'free_payment_on_fixed_machine',
+          amount,
+          details: { mp_payment_id: String(dataId) }
+        });
+        await armFixedQR(machine);
+      }
       return;
     }
 
