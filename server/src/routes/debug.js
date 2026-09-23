@@ -18,7 +18,7 @@ router.post('/reconcile', async (_req, res) => {
   }
 });
 
-function genPulseId() { return 'p_' + crypto.randomBytes(2).toString('hex'); }
+function genPulseId() { return 'p_' + crypto.randomBytes(6).toString('hex'); }
 
 // POST /api/debug/simulate-payment — simula un pago aprobado sin pasar por MP
 // Body: { machine_id, amount }

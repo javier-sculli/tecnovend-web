@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import newrelic from 'newrelic';
 import db from '../db/schema.js';
 
 // Registro de pagos y encolado de pulsos. Vive acá (no en el router del webhook)
@@ -6,7 +7,10 @@ import db from '../db/schema.js';
 // (services/reconcile.js). La lógica de pago/pulso es única e idéntica para ambas;
 // solo cambia la fuente del dato. Dedup por mp_payment_id UNIQUE evita doble carga.
 
-function genPulseId() { return 'p_' + crypto.randomBytes(2).toString('hex'); }
+// Genera un ID de pulso de 14 caracteres ('p_' + 12 hex).
+// Respeta estrictamente el buffer char id[16] del firmware ESP32 (máx 15 chars útiles)
+// y ofrece 281 billones de combinaciones posibles (cero colisiones prácticas).
+function genPulseId() { return 'p_' + crypto.randomBytes(6).toString('hex'); }
 function genPaymentId() { return crypto.randomUUID(); }
 
 // Discriminador único: ¿este pago viene de una orden creada por NOSOTROS?
@@ -40,32 +44,65 @@ export async function enqueuePayment(machineId, mpId, amount, pulses, { idKind, 
   // fila en pulse_queue → ni dispensaba ni se reembolsaba (limbo permanente, porque
   // la dedup por mp_payment_id impedía reintentar). Red de seguridad para filas
   // viejas rotas: findPaymentsMissingPulses (services/pulses.js).
-  return await db.transaction(async (tx) => {
-    const existing = await tx.prepare('SELECT id FROM payments WHERE mp_payment_id = ?').get(mpId);
-    if (existing) return null; // deduplicación
+  try {
+    return await db.transaction(async (tx) => {
+      const existing = await tx.prepare('SELECT id FROM payments WHERE mp_payment_id = ?').get(mpId);
+      if (existing) return null; // deduplicación
 
-    const paymentId = genPaymentId();
+      const paymentId = genPaymentId();
 
-    // Siempre registramos el pago en la BD (aunque pulses=0 por monto insuficiente)
-    const status = 'approved'; // MP aprobó el pago — independiente de pulsos
-    await tx.prepare(`
-      INSERT INTO payments (id, machine_id, mp_payment_id, amount, method, status, pulses_calculated, mp_id_kind, refund_status)
-      VALUES (?, ?, ?, ?, 'qr', ?, ?, ?, ?)
-    `).run(paymentId, machineId, mpId, amount, status, pulses, idKind ?? null, refundPending ? 'pending' : null);
-
-    if (pulses >= 1) {
-      // Ventana de ACK: 3 minutos. Si el Arduino no confirma en ese tiempo, el
-      // pulso se expira (se saca de la cola, no acreditó) y se reembolsa el pago.
-      // OJO: expires_at se calcula con datetime() de SQLite (formato 'YYYY-MM-DD
-      // HH:MM:SS') para que coincida con datetime('now') del barrido. Un ISO de JS
-      // (con 'T' y 'Z') compara como string SIEMPRE mayor → el pulso nunca expira.
+      // Siempre registramos el pago en la BD (aunque pulses=0 por monto insuficiente)
+      const status = 'approved'; // MP aprobó el pago — independiente de pulsos
       await tx.prepare(`
-        INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
-        VALUES (?, ?, ?, 1, ?, datetime('now', '+3 minutes'))
-      `).run(genPulseId(), machineId, paymentId, pulses);
-    }
+        INSERT INTO payments (id, machine_id, mp_payment_id, amount, method, status, pulses_calculated, mp_id_kind, refund_status)
+        VALUES (?, ?, ?, ?, 'qr', ?, ?, ?, ?)
+      `).run(paymentId, machineId, mpId, amount, status, pulses, idKind ?? null, refundPending ? 'pending' : null);
 
-    return paymentId;
-  });
+      if (pulses >= 1) {
+        // Ventana de ACK: 3 minutos. Si el Arduino no confirma en ese tiempo, el
+        // pulso se expira (se saca de la cola, no acreditó) y se reembolsa el pago.
+        // OJO: expires_at se calcula con datetime() de SQLite (formato 'YYYY-MM-DD
+        // HH:MM:SS') para que coincida con datetime('now') del barrido. Un ISO de JS
+        // (con 'T' y 'Z') compara como string SIEMPRE mayor → el pulso nunca expira.
+
+        // Red de seguridad: si colisionara (1 en 281 billones), detectamos, reportamos
+        // a New Relic/Sentry y regeneramos para nunca abortar la compra del cliente.
+        let pulseId = genPulseId();
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const dup = await tx.prepare('SELECT 1 FROM pulse_queue WHERE id = ?').get(pulseId);
+          if (!dup) break;
+
+          const collisionErr = new Error(`[COLISION PULSE_ID] pulse_id="${pulseId}" ya existe en pulse_queue para machine="${machineId}" mpId="${mpId}" (intento ${attempt})`);
+          console.error('[pulse_collision]', collisionErr.message);
+          try {
+            newrelic.noticeError(collisionErr, {
+              machine_id: machineId,
+              mp_id: mpId,
+              collided_pulse_id: pulseId,
+              attempt,
+            });
+          } catch (_) {}
+
+          pulseId = genPulseId();
+        }
+
+        await tx.prepare(`
+          INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
+          VALUES (?, ?, ?, 1, ?, datetime('now', '+3 minutes'))
+        `).run(pulseId, machineId, paymentId, pulses);
+      }
+
+      return paymentId;
+    });
+  } catch (err) {
+    if (err.message?.includes('pulse_queue_pkey')) {
+      const pkeyErr = new Error(`[CRITICAL COLISION] Violación de clave única pulse_queue_pkey para machine="${machineId}" mpId="${mpId}": ${err.message}`);
+      console.error('[pulse_collision_critical]', pkeyErr.message);
+      try {
+        newrelic.noticeError(pkeyErr, { machine_id: machineId, mp_id: mpId, original_error: err.message });
+      } catch (_) {}
+    }
+    throw err;
+  }
 }
 

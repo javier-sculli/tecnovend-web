@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import newrelic from 'newrelic';
 import db from '../db/schema.js';
 import { verifyWebhookSignature, getPaymentAny, getOrderAny, clientByMpUser } from '../services/mp.js';
 import { processPendingRefunds } from '../services/refunds.js';
@@ -195,6 +196,14 @@ router.post('/mercadopago', async (req, res) => {
     await logWebhook({ type, action, dataId, rawBody: req.body, result: `NO_HANDLER: type=${type} action=${action}` });
   } catch (err) {
     console.error('[webhook]', err.message);
+    try {
+      newrelic.noticeError(err, {
+        webhook_type: type,
+        webhook_action: action,
+        webhook_data_id: dataId,
+        user_id: req.body?.user_id,
+      });
+    } catch (_) {}
     await logWebhook({ type, action, dataId: dataId ?? null, rawBody: req.body, result: `EXCEPTION: ${err.message}` });
   }
 });
