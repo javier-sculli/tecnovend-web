@@ -18,7 +18,7 @@ export async function runDailyRefundAudit() {
   // 1. Evolución diaria de los últimos 8 días
   const daily = await pool.query(`
     SELECT 
-      to_char(created_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'YYYY-MM-DD') as fecha,
+      to_char(created_at - INTERVAL '3 hours', 'YYYY-MM-DD') as fecha,
       COUNT(*) as total_ventas,
       COUNT(CASE WHEN refund_status = 'done' THEN 1 END) as reembolsos,
       ROUND(COUNT(CASE WHEN refund_status = 'done' THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0), 1) as pct_tasa_reembolso,
@@ -43,12 +43,12 @@ export async function runDailyRefundAudit() {
   // 2. Comportamiento horario de hoy (hora Argentina)
   const todayHourly = await pool.query(`
     SELECT 
-      to_char(created_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:00') as hora,
+      to_char(created_at - INTERVAL '3 hours', 'HH24:00') as hora,
       COUNT(*) as ventas,
       COUNT(CASE WHEN refund_status = 'done' THEN 1 END) as reembolsos,
       ROUND(COUNT(CASE WHEN refund_status = 'done' THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0), 1) as pct_fallas
     FROM payments
-    WHERE created_at AT TIME ZONE 'America/Argentina/Buenos_Aires' >= CURRENT_DATE
+    WHERE (created_at - INTERVAL '3 hours')::date = (CURRENT_TIMESTAMP - INTERVAL '3 hours')::date
       AND status = 'approved'
     GROUP BY 1
     ORDER BY 1 ASC;
@@ -75,7 +75,7 @@ export async function runDailyRefundAudit() {
     FROM payments p
     JOIN machines m ON p.machine_id = m.id
     LEFT JOIN clients c ON m.client_id = c.id
-    WHERE p.created_at AT TIME ZONE 'America/Argentina/Buenos_Aires' >= CURRENT_DATE
+    WHERE (p.created_at - INTERVAL '3 hours')::date = (CURRENT_TIMESTAMP - INTERVAL '3 hours')::date
       AND p.status = 'approved'
     GROUP BY m.name, m.firmware_version, c.name
     HAVING COUNT(CASE WHEN p.refund_status = 'done' THEN 1 END) > 0
@@ -100,7 +100,7 @@ export async function runDailyRefundAudit() {
   // 4. Últimas 10 transacciones del día
   const lastSales = await pool.query(`
     SELECT 
-      to_char(p.created_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI:SS') as hora,
+      to_char(p.created_at - INTERVAL '3 hours', 'HH24:MI:SS') as hora,
       m.name as maquina,
       p.amount,
       p.refund_status,
@@ -110,7 +110,7 @@ export async function runDailyRefundAudit() {
     FROM payments p
     JOIN machines m ON p.machine_id = m.id
     LEFT JOIN pulse_queue pq ON pq.payment_id = p.id
-    WHERE p.created_at AT TIME ZONE 'America/Argentina/Buenos_Aires' >= CURRENT_DATE
+    WHERE (p.created_at - INTERVAL '3 hours')::date = (CURRENT_TIMESTAMP - INTERVAL '3 hours')::date
       AND p.status = 'approved'
     ORDER BY p.created_at DESC
     LIMIT 10;
