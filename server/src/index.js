@@ -1,4 +1,4 @@
-import 'newrelic';
+import newrelic from 'newrelic';
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -77,6 +77,17 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   if (!process.env.MP_ACCESS_TOKEN) {
     console.warn('⚠  MP_ACCESS_TOKEN no configurado — copiá .env.example a .env y completalo');
   }
+});
+
+// Resiliencia de proceso: evitar que un error no capturado en timers o APIs tire el servidor
+process.on('unhandledRejection', (reason) => {
+  console.error('[server] Unhandled Rejection:', reason);
+  try { newrelic.noticeError(reason); } catch (_) {}
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[server] Uncaught Exception:', err);
+  try { newrelic.noticeError(err); } catch (_) {}
 });
 
 // Aumentar el Keep-Alive timeout de Node.js a 65s (por defecto es 5s) para que el TCP Proxy de los Arduinos no cierre sockets entre polls de 3s
