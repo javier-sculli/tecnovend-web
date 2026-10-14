@@ -1,12 +1,14 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './auth.jsx';
 import Login from './pages/Login.jsx';
+import ResetPassword from './pages/ResetPassword.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Clientes from './pages/Clientes.jsx';
 import Configuracion from './pages/Configuracion.jsx';
 import Maquinas from './pages/Maquinas.jsx';
 import Pagos from './pages/Pagos.jsx';
 import Descuentos from './pages/Descuentos.jsx';
+import Monitoreo from './pages/Monitoreo.jsx';
 
 // Gate de autenticación: sin sesión → /login (recordando a dónde iba).
 function RequireAuth({ children }) {
@@ -22,6 +24,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/maquinas" replace /> : <Login />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       {/* Default → Máquinas (Dashboard oculto por ahora) */}
       <Route path="/" element={<Navigate to="/maquinas" replace />} />
       <Route path="/clientes" element={<RequireAuth><Clientes /></RequireAuth>} />
@@ -32,6 +35,7 @@ export default function App() {
       <Route path="/pagos" element={<RequireAuth><Pagos /></RequireAuth>} />
       <Route path="/descuentos" element={<RequireAuth><Descuentos /></RequireAuth>} />
       <Route path="/reportes" element={<RequireAuth><Dashboard /></RequireAuth>} />
+      <Route path="/monitoreo" element={<RequireAuth><Monitoreo /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

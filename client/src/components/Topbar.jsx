@@ -290,12 +290,6 @@ export default function Topbar({ envProd, onEnvToggle, crumbs = ["Operación", "
           </React.Fragment>
         ))}
       </div>
-      <div className="env-switch" onClick={onEnvToggle} title="Cambiar entorno" style={{ marginLeft: 8 }}>
-        <span className={"env-pill " + (envProd ? "prod" : "test")}>
-          <span className="d"></span>
-          {envProd ? "Producción" : "Sandbox · TEST"}
-        </span>
-      </div>
       <div className="search">
         {Icon.search}
         <input placeholder="Buscar máquina, sede, pos_id, mp_payment_id…" />

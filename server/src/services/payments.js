@@ -88,7 +88,7 @@ export async function enqueuePayment(machineId, mpId, amount, pulses, { idKind, 
 
         await tx.prepare(`
           INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
-          VALUES (?, ?, ?, 1, ?, datetime('now', '+3 minutes'))
+          VALUES (?, ?, ?, 1, ?, datetime('now', '+5 minutes'))
         `).run(pulseId, machineId, paymentId, pulses);
       }
 

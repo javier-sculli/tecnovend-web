@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import db from '../db/schema.js';
 import { armFixedQR } from '../services/qr.js';
 import { refundPaymentById } from '../services/refunds.js';
@@ -58,6 +59,20 @@ async function findMachineBySerial(serial) {
   return null;
 }
 
+const TZ = 'America/Argentina/Buenos_Aires';
+
+function getArgentinaTodayStartIso() {
+  const parts = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date()).forEach(p => { if (p.type !== 'literal') parts[p.type] = p.value; });
+
+  return new Date(`${parts.year}-${parts.month}-${parts.day}T00:00:00-03:00`).toISOString();
+}
+
 router.get('/', async (req, res) => {
   let ctx;
   try {
@@ -66,7 +81,7 @@ router.get('/', async (req, res) => {
     return res.status(err.status || 500).json({ error: err.message });
   }
 
-  const todayStr = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  const todayStartIso = getArgentinaTodayStartIso();
   
   let whereClause = '';
   let queryParams = [];
@@ -93,10 +108,10 @@ router.get('/', async (req, res) => {
           AND p.created_at >= datetime('now', '-7 days')) AS revenue_week,
       (SELECT COALESCE(SUM(p.amount), 0) FROM payments p
         WHERE p.machine_id = m.id AND p.status = 'approved'
-          AND p.created_at >= '${todayStr}') AS today_total,
+          AND p.created_at >= '${todayStartIso}') AS today_total,
       (SELECT COUNT(*) FROM payments p
         WHERE p.machine_id = m.id AND p.status = 'approved'
-          AND p.created_at >= '${todayStr}') AS today_count
+          AND p.created_at >= '${todayStartIso}') AS today_count
     FROM machines m
     ${whereClause}
     ORDER BY m.created_at DESC
@@ -244,12 +259,12 @@ router.get('/:id', async (req, res) => {
   if (!access) return;
   const { machine } = access;
 
-  const todayStr = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  const todayStartIso = getArgentinaTodayStartIso();
   const todayStats = await db.prepare(`
     SELECT COALESCE(SUM(amount), 0) AS today_total, COUNT(*) AS today_count
     FROM payments
     WHERE machine_id = ? AND status = 'approved' AND created_at >= ?
-  `).get(req.params.id, todayStr);
+  `).get(req.params.id, todayStartIso);
 
   const payments = await db.prepare('SELECT * FROM payments WHERE machine_id = ? ORDER BY created_at DESC LIMIT 20').all(req.params.id);
   res.json({
@@ -448,6 +463,47 @@ router.delete('/:id/pulses/:pulseId', async (req, res) => {
   res.json({ ok: true, refunded: r.ok === true, refund_error: r.error || null });
 });
 
+router.post('/:id/simulate-payment', async (req, res) => {
+  const access = await checkMachineAccess(req, res, req.params.id);
+  if (!access) return;
+
+  const { machine } = access;
+  const rawAmt = req.body?.amount != null && req.body?.amount !== ''
+    ? req.body.amount
+    : (machine.qr_mode === 'fixed' && machine.qr_fixed_amount ? machine.qr_fixed_amount : machine.pulse_value);
+  const amt = Math.floor(Number(rawAmt));
+
+  if (!amt || isNaN(amt) || amt <= 0) {
+    return res.status(400).json({ error: 'Monto inválido' });
+  }
+
+  const pulseVal = Number(machine.pulse_value) || 100;
+  const pulses = Math.max(1, Math.floor(amt / pulseVal));
+
+  const channel = Number(req.body?.channel) || 1;
+  const pulseId = 'p_sim_' + crypto.randomBytes(5).toString('hex');
+
+  await db.prepare(`
+    INSERT INTO pulse_queue (id, machine_id, payment_id, channel, count, expires_at)
+    VALUES (?, ?, NULL, ?, ?, datetime('now', '+10 minutes'))
+  `).run(pulseId, machine.id, channel, pulses);
+
+  await db.prepare(`
+    INSERT INTO machine_events (machine_id, type, detail)
+    VALUES (?, 'simulate_payment', ?)
+  `).run(machine.id, JSON.stringify({ amount: amt, pulses, pulse_id: pulseId, channel, simulated: true }));
+
+  console.log(`[simulate-payment] ✓ Pago simulado $${amt} → ${pulses} pulso(s) (canal ${channel}) → máquina ${machine.id} (${pulseId})`);
+
+  res.json({
+    ok: true,
+    amount: amt,
+    pulses,
+    channel,
+    pulse_id: pulseId,
+  });
+});
+
 router.get('/:id/events', async (req, res) => {
   const access = await checkMachineAccess(req, res, req.params.id);
   if (!access) return;
@@ -547,6 +603,14 @@ router.get('/:id/events', async (req, res) => {
       out.push({ type: 'config', kind: 'bad', title: 'Actualización Fallida', desc: `Fallo al actualizar a versión ${d.target_version || ''}: ${d.error || 'error desconocido'}`, at: e.created_at });
     } else if (e.type === 'ota_rollback') {
       out.push({ type: 'config', kind: 'warn', title: 'Reversión de Firmware (Rollback)', desc: `Volvió a versión ${d.returned_to_version || ''} (falló versión ${d.from_version || ''})`, at: e.created_at });
+    } else if (e.type === 'simulate_payment') {
+      out.push({
+        type: 'simulated',
+        kind: 'ok',
+        title: 'Pago simulado (prueba)',
+        desc: `$${d?.amount != null ? d.amount : '—'} · ${d?.pulses ?? 1} pulso${d?.pulses !== 1 ? 's' : ''} (c${d?.channel ?? 1})`,
+        at: e.created_at,
+      });
     } else {
       out.push({ type: e.type, kind: 'ok', title: e.type, desc: '', at: e.created_at });
     }

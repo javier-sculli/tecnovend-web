@@ -640,7 +640,7 @@ export default function Dashboard() {
 
               {/* Pie de Página */}
               <div style={{ textAlign: "center", padding: "8px 0 0", color: "var(--ink-4)", fontSize: 11.5, letterSpacing: "0.04em" }}>
-                VendPoint · Vending · v1.0 — Datos Reales del Entorno {envProd ? "Producción" : "Sandbox"}
+                VendPoint · Vending · v1.0 — Datos Reales del Entorno de Producción
               </div>
 
             </div>

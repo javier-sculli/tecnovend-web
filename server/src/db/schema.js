@@ -124,6 +124,19 @@ export async function initDb() {
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_memberships_user_client ON memberships(user_id, client_id);`);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      used_at    TIMESTAMP,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token_hash);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);`);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS machines (
       id              TEXT PRIMARY KEY,
       name            TEXT NOT NULL,

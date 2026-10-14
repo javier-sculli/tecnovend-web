@@ -90,7 +90,11 @@ export async function processEmployeeDiscount({ paymentId, mpPaymentId, amount, 
     }
 
     const payerEmail = paymentData?.payer?.email || null;
-    const payerDni = paymentData?.payer?.identification?.number || null;
+    const payerDni =
+      paymentData?.payer?.identification?.number ||
+      paymentData?.card?.cardholder?.identification?.number ||
+      paymentData?.point_of_interaction?.transaction_data?.payer?.identification?.number ||
+      null;
 
     if (!payerEmail && !payerDni) {
       console.log(`[employee-discount] pago ${mpPaymentId} sin datos de payer (email/DNI) en MP`);

@@ -37,6 +37,7 @@ export default function Sidebar() {
 
   if (isSuperAdmin) {
     navOps.push({ id: "clientes", ico: Icon.building, label: "Clientes", href: "/clientes" });
+    navOps.push({ id: "monitoreo", ico: Icon.pulse, label: "Monitoreo Red", href: "/monitoreo" });
   }
 
   const navSys = [

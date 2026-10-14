@@ -107,7 +107,9 @@ router.get('/poll/:arduinoId', async (req, res) => {
     const ids = pulsesToSend.map(p => p.id);
     await db.prepare(`
       UPDATE pulse_queue 
-      SET status = 'delivered', delivered_at = datetime('now') 
+      SET status = 'delivered', 
+          delivered_at = datetime('now'),
+          expires_at = datetime('now', '+90 seconds')
       WHERE id IN (${ids.map(() => '?').join(',')})
     `).run(...ids);
   }
@@ -347,23 +349,18 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
   });
 
   // Detección automática de bucle de reinicios (bootloop)
-  const isStartup = reason === 'startup';
-  const hasBadReset = reset_reason_text && ['panic', 'watchdog', 'brownout', 'interrupt_wdt', 'task_wdt'].includes(reset_reason_text);
-  
-  if (isStartup || (uptime != null && uptime < 60 && hasBadReset)) {
+  // Solo evaluamos en el arranque inicial del dispositivo (primeros 20s de uptime)
+  // para no contar múltiples heartbeats del mismo arranque como reinicios distintos.
+  if (uptime != null && uptime <= 20) {
     try {
-      // Buscar reinicios recientes de esta máquina en los últimos 10 minutos
+      // Buscar arranques recientes de esta máquina en los últimos 10 minutos (uptime <= 20s)
       const recentResets = await db.prepare(`
         SELECT count(*) as count 
         FROM machine_events 
         WHERE machine_id = ? 
           AND type = 'heartbeat' 
           AND created_at > datetime('now', '-10 minutes')
-          AND (
-            (detail::json->>'reason' = 'startup') 
-            OR 
-            ((detail::json->>'uptime')::numeric < 60 AND detail::json->>'reset_reason_text' IN ('panic', 'watchdog', 'brownout', 'interrupt_wdt', 'task_wdt'))
-          )
+          AND (detail::json->>'uptime')::numeric <= 20
       `).get(machineId);
 
       if (recentResets && recentResets.count >= 3) {

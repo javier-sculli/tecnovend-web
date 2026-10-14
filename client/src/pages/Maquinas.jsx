@@ -783,7 +783,11 @@ function PulsesCard({ machineId }) {
                   <div className="tx-prod">
                     <span className="mono" style={{ fontSize: 12 }}>{p.id}</span>
                   </div>
-                  {p.payment_id && <div className="tx-meta mono" style={{ fontSize: 11 }}>pago {p.payment_id.slice(0, 8)}</div>}
+                  {p.payment_id ? (
+                    <div className="tx-meta mono" style={{ fontSize: 11 }}>pago {p.payment_id.slice(0, 8)}</div>
+                  ) : (
+                    <div className="tx-meta mono" style={{ fontSize: 11, color: 'var(--ok, #15803d)', fontWeight: 600 }}>⚡ simulado (test)</div>
+                  )}
                 </div>
                 <div><span className={'spill ' + st.cls}>{st.txt}</span></div>
                 <div className="mono" style={{ fontSize: 13, textAlign: 'right', color: 'var(--ink-1)' }}>
@@ -812,14 +816,213 @@ function PulsesCard({ machineId }) {
   );
 }
 
+/* ---------- Simulate Payment Modal ---------- */
+function SimulatePaymentModal({ isOpen, onClose, m, onSimulated }) {
+  const isFixed = m.qr_mode === 'fixed';
+  const defaultAmt = isFixed
+    ? (m.qr_fixed_amount || m.pulse_value || 500)
+    : (m.min_payment || m.pulse_value || 500);
+
+  const [amount, setAmount] = useState(defaultAmt);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setAmount(isFixed ? (m.qr_fixed_amount || m.pulse_value || 500) : (m.min_payment || m.pulse_value || 500));
+      setError(null);
+      setSuccess(null);
+      setLoading(false);
+    }
+  }, [isOpen, isFixed, m.qr_fixed_amount, m.min_payment, m.pulse_value]);
+
+  if (!isOpen) return null;
+
+  const pulseValue = Number(m.pulse_value) || 100;
+  const minRequired = isFixed ? 1 : pulseValue;
+  const numAmount = Number(amount) || 0;
+  const calculatedPulses = pulseValue > 0 ? Math.floor(numAmount / pulseValue) : 0;
+  const isBelowMin = numAmount < minRequired;
+  const isValid = numAmount > 0 && !isBelowMin && (isFixed ? numAmount > 0 : calculatedPulses >= 1);
+
+  const handleSubmit = async (e) => {
+    e?.preventDefault();
+    if (!isValid || loading) return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/machines/${m.id}/simulate-payment`, {
+        method: 'POST',
+        body: JSON.stringify({ amount: numAmount, channel: 1 }),
+      });
+      setSuccess(`✓ Simulación enviada ($${res.amount}). Se encolaron ${res.pulses} pulso(s) para la máquina.`);
+      setTimeout(() => {
+        onSimulated?.();
+        onClose();
+      }, 1500);
+    } catch (err) {
+      setError(err.message || 'Error al simular pago');
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && !loading && onClose()}>
+      <div className="modal" style={{ maxWidth: 440 }}>
+        <div className="modal-head">
+          <div>
+            <div className="modal-title" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              {Icon.pulse} Simular Pago
+            </div>
+            <div className="modal-sub">{m.name} · {m.id}</div>
+          </div>
+          <button className="modal-close" onClick={onClose} disabled={loading}>{Icon.x}</button>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body" style={{ gap: 14 }}>
+            {/* Modo según configuración */}
+            <div style={{
+              background: isFixed ? 'var(--ok-soft, #ecfdf5)' : 'var(--info-soft, #eff6ff)',
+              border: `1px solid ${isFixed ? '#a7f3d0' : '#bfdbfe'}`,
+              borderRadius: 8,
+              padding: '10px 14px',
+              fontSize: 12.5,
+              color: 'var(--ink-1)'
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                {isFixed ? 'Configuración de máquina: Precio fijo' : 'Configuración de máquina: Monto libre'}
+              </div>
+              <div style={{ color: 'var(--ink-2)', lineHeight: 1.4 }}>
+                {isFixed
+                  ? `Esta máquina tiene precio fijo de $${m.qr_fixed_amount}. La simulación utilizará este valor.`
+                  : `Esta máquina acepta monto libre (mínimo $${minRequired}). Podés ingresar el monto a probar.`}
+              </div>
+            </div>
+
+            {/* Input de monto */}
+            <div className="form-field">
+              <label style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>Monto a simular (ARS)</span>
+                {isFixed && (
+                  <span style={{ fontSize: 11, color: 'var(--ok, #15803d)', fontWeight: 600 }}>
+                    Valor fijo
+                  </span>
+                )}
+              </label>
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                <span style={{ position: 'absolute', left: 12, color: 'var(--ink-3)', fontWeight: 600, fontSize: 14 }}>$</span>
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={e => !isFixed && setAmount(e.target.value)}
+                  readOnly={isFixed}
+                  min={minRequired}
+                  step={pulseValue}
+                  required
+                  style={{
+                    paddingLeft: 26,
+                    fontSize: 15,
+                    fontWeight: 600,
+                    ...(isFixed ? { background: 'var(--bg-2, #f5f5f4)', cursor: 'not-allowed', color: 'var(--ink-2)' } : {})
+                  }}
+                />
+              </div>
+              {isBelowMin && !isFixed && (
+                <div style={{ fontSize: 12, color: 'var(--bad, #b91c1c)', marginTop: 4 }}>
+                  El monto mínimo para generar un pulso es ${minRequired}.
+                </div>
+              )}
+            </div>
+
+            {/* Desglose de pulsos calculados */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: 10,
+              background: 'var(--panel, #fff)',
+              border: '1px solid var(--line, #e5e5e0)',
+              borderRadius: 8,
+              padding: '10px 14px'
+            }}>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--ink-4)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Valor por pulso</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-2)', marginTop: 2 }}>${pulseValue}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--ink-4)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Pulsos calculados</div>
+                <div style={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: calculatedPulses > 0 ? 'var(--ok, #15803d)' : 'var(--bad, #b91c1c)',
+                  marginTop: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4
+                }}>
+                  {Icon.pulse} {calculatedPulses} {calculatedPulses === 1 ? 'pulso' : 'pulsos'}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.4, display: 'flex', gap: 6 }}>
+              <span style={{ fontSize: 13 }}>ℹ️</span>
+              <span>El pulso se enviará directamente a la cola del Arduino sin generar cobros reales ni alterar reportes en Pagos.</span>
+            </div>
+
+            {error && (
+              <div style={{ background: 'var(--bad-soft, #fee2e2)', color: 'var(--bad, #b91c1c)', padding: '8px 12px', borderRadius: 6, fontSize: 12.5 }}>
+                {error}
+              </div>
+            )}
+
+            {success && (
+              <div style={{ background: 'var(--ok-soft, #ecfdf5)', color: 'var(--ok, #15803d)', padding: '8px 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 500 }}>
+                {success}
+              </div>
+            )}
+          </div>
+
+          <div className="modal-foot">
+            <button type="button" className="btn" onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              className="btn"
+              disabled={!isValid || loading || !!success}
+              style={{
+                background: 'var(--ok, #16a34a)',
+                color: '#fff',
+                border: '1px solid #15803d',
+                fontWeight: 600,
+                opacity: (!isValid || loading || !!success) ? 0.6 : 1
+              }}
+            >
+              {loading ? 'Enviando pulsos…' : (
+                <>
+                  {Icon.pulse} Simular y Enviar Pulsos
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Machine QR Card ---------- */
 // QR físico de la máquina (el de la caja/POS de MP, para imprimir y pegar).
 // El QR impreso es siempre el mismo; el modo (fijo/dinámico) define qué ve el
 // cliente al escanear: la orden con precio cargado o el monto libre.
-function MachineQRCard({ m }) {
+function MachineQRCard({ m, onRefresh }) {
   const [pos, setPos] = useState(null);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showSimulate, setShowSimulate] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -872,6 +1075,22 @@ function MachineQRCard({ m }) {
             {err.includes('Sin POS') || err.includes('no_pos')
               ? <>Esta máquina no tiene caja QR de MP todavía.<br /><span style={{ fontSize: 12 }}>Tageala desde la card "Tageo MP" para generar su QR.</span></>
               : <>No se pudo cargar el QR: {err}</>}
+            <div style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowSimulate(true)}
+                style={{
+                  background: 'var(--ok, #16a34a)',
+                  color: '#fff',
+                  border: '1px solid #15803d',
+                  fontWeight: 600,
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)'
+                }}
+              >
+                {Icon.pulse} Simular Pago
+              </button>
+            </div>
           </div>
         ) : (
           <>
@@ -885,7 +1104,21 @@ function MachineQRCard({ m }) {
                 ? <>Al escanear, el cliente ve <strong>${m.qr_fixed_amount}</strong> ya cargado.</>
                 : <>Al escanear, el cliente ingresa el monto que quiere pagar.</>}
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowSimulate(true)}
+                style={{
+                  background: 'var(--ok, #16a34a)',
+                  color: '#fff',
+                  border: '1px solid #15803d',
+                  fontWeight: 600,
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)'
+                }}
+              >
+                {Icon.pulse} Simular Pago
+              </button>
               <button className="btn" onClick={printQR} disabled={!imgSrc}>{Icon.download} Imprimir</button>
               {imgSrc && (
                 <a className="btn" href={imgSrc} download={`qr_${m.id}.png`} target="_blank" rel="noreferrer">
@@ -896,6 +1129,15 @@ function MachineQRCard({ m }) {
           </>
         )}
       </div>
+
+      {showSimulate && (
+        <SimulatePaymentModal
+          isOpen={showSimulate}
+          onClose={() => setShowSimulate(false)}
+          m={m}
+          onSimulated={() => onRefresh?.()}
+        />
+      )}
     </div>
   );
 }
@@ -1788,7 +2030,7 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
           </div>
 
           {/* QR imprimible de la máquina */}
-          <MachineQRCard m={m} />
+          <MachineQRCard m={m} onRefresh={onRefresh} />
 
         </div>
 

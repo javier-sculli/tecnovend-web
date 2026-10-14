@@ -292,6 +292,26 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
     await loadUsers();
   };
 
+  const sendPasswordReset = (u) => {
+    showConfirm({
+      title: 'Reenviar mail de recuperación',
+      description: `¿Deseás enviar un correo a "${u.name}" (${u.email}) con el enlace para restablecer su contraseña?`,
+      confirmText: 'Enviar correo',
+      variant: 'primary',
+      onConfirm: async () => {
+        try {
+          await apiFetch('/api/auth/forgot-password', {
+            method: 'POST',
+            body: JSON.stringify({ email: u.email }),
+          });
+          showAlert(`Se envió el correo de recuperación a ${u.email}`, 'success');
+        } catch (e) {
+          showAlert('Error al enviar correo: ' + e.message, 'error');
+        }
+      }
+    });
+  };
+
   const deleteUser = (u) => {
     if (currentUser?.id === u.id) {
       showAlert('No podés eliminar tu propia cuenta', 'error', 'Atención');
@@ -349,15 +369,27 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
               <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
                 {u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}
               </span>
-              {canManageUsers && currentUser?.id !== u.id && (
-                <button
-                  className="link-btn"
-                  title="Eliminar usuario de este cliente"
-                  onClick={() => deleteUser(u)}
-                  style={{ color: 'var(--bad)', marginLeft: 8, padding: '2px 4px' }}
-                >
-                  {Icon.trash}
-                </button>
+              {canManageUsers && (
+                <>
+                  <button
+                    className="link-btn"
+                    title="Reenviar mail para resetear contraseña"
+                    onClick={() => sendPasswordReset(u)}
+                    style={{ color: 'var(--brand)', marginLeft: 8, padding: '2px 4px' }}
+                  >
+                    {Icon.mail}
+                  </button>
+                  {currentUser?.id !== u.id && (
+                    <button
+                      className="link-btn"
+                      title="Eliminar usuario de este cliente"
+                      onClick={() => deleteUser(u)}
+                      style={{ color: 'var(--bad)', padding: '2px 4px' }}
+                    >
+                      {Icon.trash}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>

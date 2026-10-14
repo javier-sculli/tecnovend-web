@@ -295,4 +295,210 @@ router.get('/summary', async (req, res) => {
   }
 });
 
+// ─── Super Admin Network Health & Refund Monitoring ───────────────────────────
+router.get('/superadmin-monitoring', async (req, res) => {
+  try {
+    const ctx = await getEffectiveOrgContext(req);
+    if (!ctx.isSuperAdmin) {
+      return res.status(403).json({ error: 'Acceso exclusivo para Super Administradores' });
+    }
+
+    const period = req.query.period || '7d';
+    let intervalSql = '7 days';
+    let isHourly = false;
+    let periodDays = 7;
+
+    if (period === '24h') {
+      intervalSql = '24 hours';
+      isHourly = true;
+      periodDays = 1;
+    } else if (period === '7d') {
+      intervalSql = '7 days';
+      periodDays = 7;
+    } else if (period === '30d') {
+      intervalSql = '30 days';
+      periodDays = 30;
+    } else if (req.query.days) {
+      periodDays = parseInt(req.query.days, 10) || 30;
+      periodDays = Math.min(90, Math.max(1, periodDays));
+      intervalSql = `${periodDays} days`;
+    }
+
+    const timeGroupSql = isHourly
+      ? `TO_CHAR(created_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:00')`
+      : `TO_CHAR(created_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'YYYY-MM-DD')`;
+
+    // 1. Métricas diarias consolidadas
+    const dailyRes = await db.prepare(isHourly ? `
+      SELECT 
+        DATE_TRUNC('hour', created_at AT TIME ZONE 'America/Argentina/Buenos_Aires') as t_trunc,
+        TO_CHAR(DATE_TRUNC('hour', created_at AT TIME ZONE 'America/Argentina/Buenos_Aires'), 'HH24:00') as dia,
+        COUNT(*) as total_pagos,
+        COUNT(CASE WHEN status = 'approved' THEN 1 END) as aprobados,
+        COUNT(CASE WHEN refund_status = 'done' THEN 1 END) as reembolsados_done,
+        COUNT(CASE WHEN refund_status = 'failed' THEN 1 END) as reembolsados_failed,
+        COUNT(CASE WHEN refund_status = 'partial' THEN 1 END) as excedente_partial,
+        ROUND(COUNT(CASE WHEN refund_status = 'done' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN status = 'approved' THEN 1 END), 0) * 100, 1) as pct_reembolso,
+        ROUND(COUNT(CASE WHEN refund_status = 'done' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN status = 'approved' THEN 1 END), 0) * 100, 1) as pct_reembolsos,
+        COALESCE(SUM(CASE WHEN refund_status = 'done' THEN amount ELSE 0 END), 0) as monto_reembolsado,
+        COALESCE(SUM(CASE WHEN status = 'approved' THEN amount ELSE 0 END), 0) as monto_total_aprobado
+      FROM payments
+      WHERE created_at >= NOW() - CAST(? AS interval)
+      GROUP BY t_trunc, dia
+      ORDER BY t_trunc ASC
+    ` : `
+      SELECT 
+        DATE_TRUNC('day', created_at AT TIME ZONE 'America/Argentina/Buenos_Aires') as t_trunc,
+        TO_CHAR(DATE_TRUNC('day', created_at AT TIME ZONE 'America/Argentina/Buenos_Aires'), 'YYYY-MM-DD') as dia,
+        COUNT(*) as total_pagos,
+        COUNT(CASE WHEN status = 'approved' THEN 1 END) as aprobados,
+        COUNT(CASE WHEN refund_status = 'done' THEN 1 END) as reembolsados_done,
+        COUNT(CASE WHEN refund_status = 'failed' THEN 1 END) as reembolsados_failed,
+        COUNT(CASE WHEN refund_status = 'partial' THEN 1 END) as excedente_partial,
+        ROUND(COUNT(CASE WHEN refund_status = 'done' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN status = 'approved' THEN 1 END), 0) * 100, 1) as pct_reembolso,
+        ROUND(COUNT(CASE WHEN refund_status = 'done' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN status = 'approved' THEN 1 END), 0) * 100, 1) as pct_reembolsos,
+        COALESCE(SUM(CASE WHEN refund_status = 'done' THEN amount ELSE 0 END), 0) as monto_reembolsado,
+        COALESCE(SUM(CASE WHEN status = 'approved' THEN amount ELSE 0 END), 0) as monto_total_aprobado
+      FROM payments
+      WHERE created_at >= NOW() - CAST(? AS interval)
+      GROUP BY t_trunc, dia
+      ORDER BY t_trunc ASC
+    `).all(intervalSql);
+
+    // 2. Reembolsos agrupados por Cliente
+    const clientsRes = await db.prepare(`
+      SELECT 
+        c.id as client_id,
+        c.name as client_name,
+        COUNT(p.id) as total_pagos,
+        COALESCE(SUM(CASE WHEN p.status = 'approved' THEN p.amount ELSE 0 END), 0) as monto_aprobado,
+        COUNT(CASE WHEN p.refund_status = 'done' THEN 1 END) as reembolsos_done,
+        COALESCE(SUM(CASE WHEN p.refund_status = 'done' THEN p.amount ELSE 0 END), 0) as monto_reembolsado,
+        ROUND(COUNT(CASE WHEN p.refund_status = 'done' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN p.status = 'approved' THEN 1 END), 0) * 100, 1) as pct_reembolso,
+        COUNT(DISTINCT m.id) as maquinas_activas
+      FROM clients c
+      JOIN machines m ON m.client_id = c.id
+      LEFT JOIN payments p ON p.machine_id = m.id AND p.created_at >= NOW() - CAST(? AS interval)
+      GROUP BY c.id, c.name
+      ORDER BY reembolsos_done DESC, total_pagos DESC
+    `).all(intervalSql);
+
+    // 3. Reembolsos y Estado por Máquina
+    const allMachines = await db.prepare(`
+      SELECT m.id, m.name, m.arduino_id, m.status, m.last_seen_at, m.last_rssi, 
+             m.firmware_version, m.target_fw_version, m.poll_interval_s,
+             c.name as client_name, c.id as client_id
+      FROM machines m
+      LEFT JOIN clients c ON m.client_id = c.id
+      ORDER BY m.name ASC
+    `).all();
+
+    const machineStatsRes = await db.prepare(`
+      SELECT 
+        p.machine_id,
+        COUNT(p.id) as total_pagos,
+        COALESCE(SUM(CASE WHEN p.status = 'approved' THEN p.amount ELSE 0 END), 0) as monto_aprobado,
+        COUNT(CASE WHEN p.refund_status = 'done' THEN 1 END) as reembolsos_done,
+        COALESCE(SUM(CASE WHEN p.refund_status = 'done' THEN p.amount ELSE 0 END), 0) as monto_reembolsado,
+        ROUND(COUNT(CASE WHEN p.refund_status = 'done' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN p.status = 'approved' THEN 1 END), 0) * 100, 1) as pct_reembolso
+      FROM payments p
+      WHERE p.created_at >= NOW() - CAST(? AS interval)
+      GROUP BY p.machine_id
+    `).all(intervalSql);
+
+    const statsMap = {};
+    for (const s of machineStatsRes) {
+      statsMap[s.machine_id] = s;
+    }
+
+    const machinesList = allMachines.map(m => {
+      const s = statsMap[m.id] || { total_pagos: 0, monto_aprobado: 0, reembolsos_done: 0, monto_reembolsado: 0, pct_reembolso: 0 };
+      return {
+        id: m.id,
+        name: m.name,
+        arduino_id: m.arduino_id,
+        client_name: m.client_name || 'Sin cliente',
+        client_id: m.client_id,
+        firmware_version: m.firmware_version || 'N/A',
+        target_fw_version: m.target_fw_version,
+        status: m.status,
+        state: machineState(m),
+        last_seen_at: m.last_seen_at,
+        rssi: m.last_rssi,
+        total_pagos: Number(s.total_pagos),
+        reembolsos_done: Number(s.reembolsos_done),
+        pct_reembolso: Number(s.pct_reembolso || 0),
+        monto_aprobado: Number(s.monto_aprobado),
+        monto_reembolsado: Number(s.monto_reembolsado),
+      };
+    }).sort((a, b) => b.reembolsos_done - a.reembolsos_done || b.total_pagos - a.total_pagos);
+
+    // 4. Causas de Reembolso en el periodo
+    const causesRes = await db.prepare(`
+      SELECT 
+        COUNT(CASE WHEN pq.status = 'expired' THEN 1 END) as timeout_expired,
+        COUNT(CASE WHEN pq.status = 'acked' AND p.refund_status = 'done' THEN 1 END) as manual_after_ack,
+        COUNT(CASE WHEN p.pulses_calculated = 0 AND p.refund_status = 'done' THEN 1 END) as out_of_service_zero_pulses
+      FROM payments p
+      LEFT JOIN pulse_queue pq ON pq.payment_id = p.id
+      WHERE p.refund_status = 'done'
+        AND p.created_at >= NOW() - CAST(? AS interval)
+    `).get(intervalSql);
+
+    // 5. Distribución de Firmware
+    const fwDist = {};
+    for (const m of allMachines) {
+      const v = m.firmware_version || 'Desconocida';
+      fwDist[v] = (fwDist[v] || 0) + 1;
+    }
+
+    // 6. KPIs consolidados
+    let totalApproved = 0;
+    let totalRefundedCount = 0;
+    let totalRefundedAmount = 0;
+    let totalApprovedAmount = 0;
+
+    for (const d of dailyRes) {
+      totalApproved += Number(d.aprobados);
+      totalRefundedCount += Number(d.reembolsados_done);
+      totalRefundedAmount += Number(d.monto_reembolsado);
+      totalApprovedAmount += Number(d.monto_total_aprobado);
+    }
+
+    const overallRefundRate = totalApproved > 0 
+      ? Number(((totalRefundedCount / totalApproved) * 100).toFixed(1)) 
+      : 0;
+
+    const criticalMachines = machinesList.filter(m => m.pct_reembolso >= 10 && m.total_pagos >= 5).length;
+
+    res.json({
+      period,
+      periodDays,
+      kpis: {
+        total_approved: totalApproved,
+        total_approved_amount: totalApprovedAmount,
+        total_refunded_count: totalRefundedCount,
+        total_refunded_amount: totalRefundedAmount,
+        overall_refund_rate: overallRefundRate,
+        critical_machines_count: criticalMachines,
+        total_machines: allMachines.length,
+      },
+      causes: {
+        timeout_expired: Number(causesRes?.timeout_expired || 0),
+        manual_after_ack: Number(causesRes?.manual_after_ack || 0),
+        out_of_service_zero_pulses: Number(causesRes?.out_of_service_zero_pulses || 0),
+      },
+      dailyTrends: dailyRes,
+      byClient: clientsRes,
+      byMachine: machinesList,
+      firmwareDistribution: fwDist,
+    });
+
+  } catch (error) {
+    console.error('[superadmin-monitoring] Error:', error);
+    res.status(500).json({ error: 'Error al procesar métricas de monitoreo' });
+  }
+});
+
 export default router;
+
