@@ -119,6 +119,13 @@ router.get('/poll/:arduinoId', async (req, res) => {
     pending_pulses_ids: pulsesToSend.map(p => p.id).join(',')
   });
 
+  // Reciclado suave de sockets TCP (~1% de polls vacíos, aprox. cada 5 min por máquina activa):
+  // Si no hay pulsos pendientes, avisamos al ESP32 que cierre la conexión para que el próximo poll abra
+  // un socket TCP/TLS limpio. Evita sockets "zombie" o conexiones semi-muertas que duren semanas por NAT/proxy.
+  if (pulsesToSend.length === 0 && Math.random() < 0.01) {
+    res.setHeader('Connection', 'close');
+  }
+
   res.json({
     machine_id: machineId,
     poll_interval_s: machine.poll_interval_s ?? 3,

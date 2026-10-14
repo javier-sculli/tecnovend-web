@@ -93,6 +93,7 @@ process.on('uncaughtException', (err) => {
 // Aumentar el Keep-Alive timeout de Node.js a 65s (por defecto es 5s) para que el TCP Proxy de los Arduinos no cierre sockets entre polls de 3s
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
+server.requestTimeout = 30000; // 30s timeout para requests que queden colgados
 
 // Barrido periódico: expira los pulsos sin ACK pasados los 3 min, marca sus
 // pagos para reembolso y procesa los reembolsos pendientes (incluye reintentos
