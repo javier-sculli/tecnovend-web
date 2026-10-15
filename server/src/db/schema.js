@@ -234,6 +234,13 @@ export async function initDb() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_machine_events_machine ON machine_events(machine_id, created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_machine_events_reboots ON machine_events(machine_id, type, created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_machine_events_type_created ON machine_events(type, created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_payments_perf ON payments(machine_id, status, created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_payments_status_created ON payments(status, created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_pulse_queue_poll ON pulse_queue(machine_id, status, expires_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_pulse_queue_payment_id ON pulse_queue(payment_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_machines_client_id ON machines(client_id);`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mp_connections (

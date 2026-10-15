@@ -99,20 +99,25 @@ router.get('/', async (req, res) => {
   }
 
   const machines = await db.prepare(`
-    SELECT m.*,
-      (SELECT COUNT(*) FROM payments p
-        WHERE p.machine_id = m.id AND p.status = 'approved'
-          AND p.created_at >= datetime('now', '-7 days')) AS payments_week,
-      (SELECT COALESCE(SUM(p.amount), 0) FROM payments p
-        WHERE p.machine_id = m.id AND p.status = 'approved'
-          AND p.created_at >= datetime('now', '-7 days')) AS revenue_week,
-      (SELECT COALESCE(SUM(p.amount), 0) FROM payments p
-        WHERE p.machine_id = m.id AND p.status = 'approved'
-          AND p.created_at >= '${todayStartIso}') AS today_total,
-      (SELECT COUNT(*) FROM payments p
-        WHERE p.machine_id = m.id AND p.status = 'approved'
-          AND p.created_at >= '${todayStartIso}') AS today_count
+    SELECT 
+      m.*,
+      COALESCE(p_week.count, 0) AS payments_week,
+      COALESCE(p_week.total, 0) AS revenue_week,
+      COALESCE(p_today.total, 0) AS today_total,
+      COALESCE(p_today.count, 0) AS today_count
     FROM machines m
+    LEFT JOIN (
+      SELECT machine_id, COUNT(*) as count, SUM(amount) as total
+      FROM payments
+      WHERE status = 'approved' AND created_at >= datetime('now', '-7 days')
+      GROUP BY machine_id
+    ) p_week ON p_week.machine_id = m.id
+    LEFT JOIN (
+      SELECT machine_id, COUNT(*) as count, SUM(amount) as total
+      FROM payments
+      WHERE status = 'approved' AND created_at >= '${todayStartIso}'
+      GROUP BY machine_id
+    ) p_today ON p_today.machine_id = m.id
     ${whereClause}
     ORDER BY m.created_at DESC
   `).all(...queryParams);

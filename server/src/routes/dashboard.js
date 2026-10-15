@@ -178,6 +178,9 @@ router.get('/summary', async (req, res) => {
     // Crear placeholders para la consulta IN (?, ?, ...)
     const placeholders = machineIds.map(() => '?').join(',');
 
+    // Parámetros comunes de filtrado temporal
+    const paymentsParams = [...machineIds, since, until];
+
     // 2. Ventas Aprobadas y Reembolsos en el período
     const paymentsQuery = `
       SELECT 
@@ -193,55 +196,21 @@ router.get('/summary', async (req, res) => {
         AND created_at <= ?
       GROUP BY status, refund_status
     `;
-    
-    const paymentsParams = [...machineIds, since, until];
-    const dbPayments = await db.prepare(paymentsQuery).all(...paymentsParams);
 
-    let totalRevenue = 0;
-    let totalPayments = 0;
-    let totalRefunded = 0;
-    let totalRefundCount = 0;
-
-    for (const row of dbPayments) {
-      if (row.status === 'approved') {
-        totalRevenue += Number(row.total_amount);
-        totalPayments += Number(row.count);
-      }
-      totalRefunded += Number(row.total_refunded_amount);
-      totalRefundCount += Number(row.refund_count);
-    }
-
-    // 3. Reinicios en el período (events de tipo heartbeat con reason 'startup')
+    // 3. Reinicios en el período: agregado en PostgreSQL en vez de descargar decenas de miles de filas
     const rebootsQuery = `
       SELECT 
         machine_id,
-        detail,
-        created_at
+        COUNT(*) as count
       FROM machine_events
       WHERE machine_id IN (${placeholders})
         AND type = 'heartbeat'
+        AND detail::json->>'reason' = 'startup'
         AND created_at >= ?
         AND created_at <= ?
-      ORDER BY created_at DESC
+      GROUP BY machine_id
     `;
     const rebootsParams = [...machineIds, since, until];
-    const dbEvents = await db.prepare(rebootsQuery).all(...rebootsParams);
-
-    const rebootsByMachineCount = {};
-    for (const mId of machineIds) {
-      rebootsByMachineCount[mId] = 0;
-    }
-
-    for (const e of dbEvents) {
-      let detail = {};
-      try { detail = e.detail ? JSON.parse(e.detail) : {}; } catch (err) {}
-
-      if (detail.reason === 'startup') {
-        rebootsByMachineCount[e.machine_id] = (rebootsByMachineCount[e.machine_id] || 0) + 1;
-      }
-    }
-
-    const totalReboots = Object.values(rebootsByMachineCount).reduce((a, b) => a + b, 0);
 
     // 4. Serie de tiempo para el gráfico (Ventas y Cantidades agrupadas por hora/día)
     const isHourly = (new Date(until).getTime() - new Date(since).getTime()) <= 36 * 60 * 60 * 1000;
@@ -260,7 +229,37 @@ router.get('/summary', async (req, res) => {
       GROUP BY 1
       ORDER BY 1 ASC
     `;
-    const chartDbRows = await db.prepare(chartQuery).all(...paymentsParams);
+
+    // Ejecutar las 3 consultas concurrentemente en paralelo vía el pool de PostgreSQL
+    const [dbPayments, dbReboots, chartDbRows] = await Promise.all([
+      db.prepare(paymentsQuery).all(...paymentsParams),
+      db.prepare(rebootsQuery).all(...rebootsParams),
+      db.prepare(chartQuery).all(...paymentsParams),
+    ]);
+
+    let totalRevenue = 0;
+    let totalPayments = 0;
+    let totalRefunded = 0;
+    let totalRefundCount = 0;
+
+    for (const row of dbPayments) {
+      if (row.status === 'approved') {
+        totalRevenue += Number(row.total_amount);
+        totalPayments += Number(row.count);
+      }
+      totalRefunded += Number(row.total_refunded_amount);
+      totalRefundCount += Number(row.refund_count);
+    }
+
+    const rebootsByMachineCount = {};
+    for (const mId of machineIds) {
+      rebootsByMachineCount[mId] = 0;
+    }
+    for (const r of dbReboots) {
+      rebootsByMachineCount[r.machine_id] = Number(r.count) || 0;
+    }
+
+    const totalReboots = Object.values(rebootsByMachineCount).reduce((a, b) => a + b, 0);
     const chartData = generateTimeSeries(since, until, chartDbRows, isHourly);
 
     // 5. Lista de máquinas con conteo de reinicios

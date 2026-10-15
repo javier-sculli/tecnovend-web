@@ -47,9 +47,10 @@ router.post('/setup', async (req, res) => {
 });
 
 // Organizaciones (clients) a las que pertenece el usuario, con su rol.
+// Organizaciones (clients) a las que pertenece el usuario, con su rol.
 // Si el usuario es Super Admin, puede ver e ingresar a TODAS las organizaciones.
-async function orgsForUser(userId) {
-  const isSuper = await isSuperAdminUser(userId);
+async function orgsForUser(userId, isSuperAdmin) {
+  const isSuper = isSuperAdmin !== undefined ? isSuperAdmin : await isSuperAdminUser(userId);
   if (isSuper) {
     return await db.prepare(`
       SELECT c.id, c.name, COALESCE(c.employee_discounts_enabled, 0) AS employee_discounts_enabled, COALESCE(m.role, 'administrador') AS role
@@ -67,8 +68,8 @@ async function orgsForUser(userId) {
   `).all(userId);
 }
 
-async function publicUser(u) {
-  const isSuper = await isSuperAdminUser(u.id);
+async function publicUser(u, isSuperAdmin) {
+  const isSuper = isSuperAdmin !== undefined ? isSuperAdmin : await isSuperAdminUser(u.id);
   return {
     id: u.id,
     name: u.name,
@@ -88,16 +89,29 @@ router.post('/login', async (req, res) => {
     return res.status(401).json({ error: 'Email o contraseña incorrectos' });
   }
 
+  const isSuper = await isSuperAdminUser(user.id);
   const token = signToken({ sub: user.id });
-  const orgs = await orgsForUser(user.id);
-  res.json({ token, user: await publicUser(user), orgs });
+  const [userData, orgs] = await Promise.all([
+    publicUser(user, isSuper),
+    orgsForUser(user.id, isSuper)
+  ]);
+  res.json({ token, user: userData, orgs });
 });
 
 // GET /api/auth/me → { user, orgs }  (requiere sesión)
 router.get('/me', requireAuth, async (req, res) => {
-  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  const orgs = await orgsForUser(user.id);
-  res.json({ user: await publicUser(user), orgs });
+  const isSuper = await isSuperAdminUser(req.user.id);
+  const orgs = await orgsForUser(req.user.id, isSuper);
+  res.json({
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      email: req.user.email,
+      must_change_password: !!req.user.must_change_password,
+      is_super_admin: isSuper,
+    },
+    orgs
+  });
 });
 
 // POST /api/auth/logout → no-op (JWT stateless; el cliente descarta el token)
