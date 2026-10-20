@@ -8,9 +8,11 @@ if (!connectionString) {
 // Configurar pool de conexiones a Postgres
 const pool = new pg.Pool({
   connectionString,
-  max: 20,
+  max: 60,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  connectionTimeoutMillis: 15000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 });
 
 // Sobrescribir parsers de pg para retornar TIMESTAMP y TIMESTAMPTZ como string

@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import newrelic from 'newrelic';
 import db from '../db/schema.js';
+import { getCachedMachine } from './machines-cache.js';
 
 // Registro de pagos y encolado de pulsos. Vive acá (no en el router del webhook)
 // porque lo usan DOS fuentes: el webhook de MP y la reconciliación periódica
@@ -24,12 +25,11 @@ export function isOurOrderRef(ref) {
   return String(ref || '').startsWith('tv_');
 }
 
-// Resuelve la máquina por su pos_id, sin filtrar por status: el pago SIEMPRE se
+// Resuelve la máquina por su pos_id (usando caché en memoria): el pago SIEMPRE se
 // registra (CLAUDE.md). El status define después si corresponden pulsos o no.
 export async function findMachine(posId) {
   if (!posId) return null;
-  return await db.prepare('SELECT * FROM machines WHERE pos_id = ? OR mp_pos_id = ?')
-    .get(posId, posId) || null;
+  return await getCachedMachine(posId);
 }
 
 // Registra el pago y, si corresponde, encola el pulso. `idKind` indica si `mpId`

@@ -108,7 +108,7 @@ router.post('/mercadopago', async (req, res) => {
       if (queued && !noDispensa) {
         const payObj = order.transactions?.payments?.[0];
         const mpPayId = String(payObj?.reference_id || payObj?.id || dataId);
-        processEmployeeDiscount({ paymentId: queued, mpPaymentId, amount, ownerClientId: machine.client_id || ownerClientId })
+        processEmployeeDiscount({ paymentId: queued, mpPaymentId: mpPayId, amount, ownerClientId: machine.client_id || ownerClientId })
           .catch(e => console.error('[webhook-emp-disc-err]', e.message));
       }
       // Precio fijo: la orden se consumió con este pago → re-armar el QR siempre si es fija.

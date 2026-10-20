@@ -18,7 +18,7 @@ import firmwareRouter from './routes/firmware.js';
 import employeeDiscountsRouter from './routes/employee-discounts.js';
 
 // Inicializar BD (crea tablas y ejecuta migraciones)
-import { initDb } from './db/schema.js';
+import db, { initDb } from './db/schema.js';
 import { expireStalePulses, findPaymentsMissingPulses } from './services/pulses.js';
 import { flagPaymentsForRefund, processPendingRefunds } from './services/refunds.js';
 import { reconcileAll } from './services/reconcile.js';
@@ -34,7 +34,14 @@ app.set('trust proxy', 1); // Railway termina TLS en el proxy
 app.use(cors());
 app.use(express.json());
 
-app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
+app.get('/health', async (_, res) => {
+  try {
+    await db.prepare('SELECT 1').get();
+    res.json({ status: 'ok', ts: new Date().toISOString() });
+  } catch (err) {
+    res.status(503).json({ status: 'error', error: err.message, ts: new Date().toISOString() });
+  }
+});
 
 
 

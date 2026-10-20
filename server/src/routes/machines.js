@@ -6,6 +6,7 @@ import { refundPaymentById } from '../services/refunds.js';
 import { provisionMachinePos } from '../services/mp.js';
 import { machineState } from '../services/machine-state.js';
 import { getEffectiveOrgContext } from '../middleware/auth.js';
+import { invalidateMachineCache } from '../services/machines-cache.js';
 
 const router = Router();
 
@@ -224,6 +225,7 @@ router.post('/', async (req, res) => {
         console.error(`[machines] ✗ provisión MP de ${existing.id} falló: ${e.message}`);
       }
 
+      invalidateMachineCache(existing.id);
       return res.status(200).json({ id: existing.id, mp, mp_error, reassigned: true });
     }
   }
@@ -245,6 +247,8 @@ router.post('/', async (req, res) => {
     wifi_ssid ?? null, wifi_user ?? null, wifi_password ?? null,
     qr_mode, qr_fixed_amount ?? null, Number(poll_interval_s) || 3,
   );
+
+  invalidateMachineCache(id);
 
   let mp = null, mp_error = null;
   try {
@@ -401,6 +405,7 @@ router.put('/:id', async (req, res) => {
     qr_armed = updated.qr_mode === 'fixed' ? await armFixedQR(updated) : undefined;
   }
 
+  invalidateMachineCache(req.params.id);
   res.json({ ok: true, ...(qr_armed !== undefined ? { qr_armed } : {}) });
 });
 
@@ -421,6 +426,7 @@ router.delete('/:id', async (req, res) => {
     return res.status(500).json({ error: e.message });
   }
 
+  invalidateMachineCache(req.params.id);
   console.log(`[machines] ✗ ${req.params.id} eliminada`);
   res.json({ ok: true });
 });

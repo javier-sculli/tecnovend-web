@@ -4,18 +4,16 @@ import crypto from 'crypto';
 import db from '../db/schema.js';
 import { refundPaymentById } from '../services/refunds.js';
 import { reconcileMachineSoon } from '../services/reconcile.js';
+import { getCachedMachine, invalidateMachineCache } from '../services/machines-cache.js';
 
 const router = Router();
 
 // El Arduino se identifica con su `arduino_id` (alfanumérico, grabado en el
 // firmware). Todos los endpoints reciben ese ID y resuelven a qué máquina
-// pertenece. Devuelve la fila completa de la máquina o null.
+// pertenece. Devuelve la fila completa de la máquina o null (desde caché en memoria).
 async function resolveMachine(arduinoId) {
   if (!arduinoId) return null;
-  const machine = await db.prepare(`
-    SELECT * FROM machines 
-    WHERE arduino_id = ? OR id = ? OR pos_id = ? OR mp_pos_id = ? OR device_serial = ?
-  `).get(arduinoId, arduinoId, arduinoId, arduinoId, arduinoId);
+  const machine = await getCachedMachine(arduinoId);
   if (machine) {
     newrelic.addCustomAttributes({
       arduino_id: arduinoId,
@@ -44,10 +42,11 @@ async function logEvent(machineId, type, detail) {
 
 // Polling: Arduino consulta pulsos pendientes
 router.get('/poll/:arduinoId', async (req, res) => {
-  console.log(`[poll-in] ${req.params.arduinoId}`);
-  newrelic.addCustomAttribute('arduino_action', 'poll');
-  const machine = await resolveMachine(req.params.arduinoId);
-  if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
+  try {
+    console.log(`[poll-in] ${req.params.arduinoId}`);
+    newrelic.addCustomAttribute('arduino_action', 'poll');
+    const machine = await resolveMachine(req.params.arduinoId);
+    if (!machine) return res.status(404).json({ error: 'Arduino no registrado' });
 
   const apiKey = req.headers['x-api-key'];
   if (!verifyApiKey(machine, apiKey)) {
@@ -126,11 +125,16 @@ router.get('/poll/:arduinoId', async (req, res) => {
     res.setHeader('Connection', 'close');
   }
 
-  res.json({
-    machine_id: machineId,
-    poll_interval_s: machine.poll_interval_s ?? 3,
-    pending_pulses: pulsesToSend.map(p => ({ pulse_id: p.id, channel: p.channel, count: p.count }))
-  });
+    res.json({
+      machine_id: machineId,
+      poll_interval_s: machine.poll_interval_s ?? 3,
+      pending_pulses: pulsesToSend.map(p => ({ pulse_id: p.id, channel: p.channel, count: p.count }))
+    });
+  } catch (err) {
+    console.error(`[poll-err] ${req.params.arduinoId}:`, err.message);
+    try { newrelic.noticeError(err); } catch (_) {}
+    res.status(500).json({ error: 'Error interno en poll', details: err.message });
+  }
 });
 
 // ACK: Arduino confirma que ejecutó el pulso
@@ -314,6 +318,10 @@ router.post('/heartbeat/:arduinoId', async (req, res) => {
     status,
     machineId,
   );
+
+  if ((status && status !== machine.status) || (fw && fw !== machine.firmware_version)) {
+    invalidateMachineCache(machineId);
+  }
 
   // Procesamiento de estados de actualización OTA (Éxito, Falla o Rollback)
   let otaCleared = false;
