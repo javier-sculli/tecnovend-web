@@ -192,6 +192,7 @@ export async function initDb() {
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_qr_order_at TIMESTAMP;`);
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_qr_order_expires_at TIMESTAMP;`);
   await pool.query(`ALTER TABLE pulse_queue ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE pulse_queue ADD COLUMN IF NOT EXISTS first_delivered_at TIMESTAMP;`);
 
 
   await pool.query(`

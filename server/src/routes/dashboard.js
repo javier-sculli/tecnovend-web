@@ -386,20 +386,26 @@ router.get('/superadmin-monitoring', async (req, res) => {
       ORDER BY 1 ASC
     `).all(...scopeM.params);
 
+    const pollTsExpr = `COALESCE(pq.first_delivered_at, pq.delivered_at)`;
+    const physSecExpr = `((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)`;
+    const pollToAckExpr = `GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - ${pollTsExpr})))`;
+    const queueToPollExpr = `GREATEST(0, EXTRACT(EPOCH FROM (${pollTsExpr} - pq.created_at)))`;
+    const netOverheadExpr = `GREATEST(0, ${pollToAckExpr} - ${physSecExpr})`;
+
     const dailyLatencyPromise = db.prepare(`
       SELECT 
         TO_CHAR(DATE_TRUNC('${truncUnit}', pq.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires'), '${fmtMask}') as bucket_key,
         COUNT(*) as acked_count,
-        ROUND(AVG(EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as avg_poll_to_ack_s,
-        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as p50_poll_to_ack_s,
-        ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as p95_poll_to_ack_s,
-        ROUND(AVG(GREATEST(0, EXTRACT(EPOCH FROM (pq.delivered_at - pq.created_at))))::numeric, 2) as avg_queue_to_poll_s
+        ROUND(AVG(${pollToAckExpr})::numeric, 2) as avg_poll_to_ack_s,
+        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${pollToAckExpr})::numeric, 2) as p50_poll_to_ack_s,
+        ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ${pollToAckExpr})::numeric, 2) as p95_poll_to_ack_s,
+        ROUND(AVG(${queueToPollExpr})::numeric, 2) as avg_queue_to_poll_s
       FROM pulse_queue pq
       JOIN machines m ON m.id = pq.machine_id
       WHERE pq.status = 'acked'
         AND pq.delivered_at IS NOT NULL
         AND pq.acked_at IS NOT NULL
-        AND pq.acked_at >= pq.delivered_at
+        AND pq.acked_at >= ${pollTsExpr}
         AND pq.created_at >= ${sinceUtcSql}
         ${scopeM.sql}
       GROUP BY 1
@@ -441,6 +447,30 @@ router.get('/superadmin-monitoring', async (req, res) => {
       ORDER BY reembolsos_done DESC, total_pagos DESC
     `).all(...clientsScope.params);
 
+    // 3b. Latencia agrupada por Cliente
+    const latencyByClientPromise = db.prepare(`
+      SELECT 
+        m.client_id,
+        COUNT(pq.id) as total_acked,
+        ROUND(AVG(pq.count)::numeric, 1) as avg_pulses,
+        ROUND(AVG(${queueToPollExpr})::numeric, 2) as avg_queue_to_poll_s,
+        ROUND(AVG(${pollToAckExpr})::numeric, 2) as avg_poll_to_ack_s,
+        ROUND(AVG(${physSecExpr})::numeric, 2) as avg_physical_s,
+        ROUND(AVG(${netOverheadExpr})::numeric, 2) as avg_net_overhead_s,
+        ROUND(AVG(EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at)))::numeric, 2) as avg_total_s,
+        COUNT(CASE WHEN ${queueToPollExpr} > 6 THEN 1 END) as slow_poll_count,
+        COUNT(CASE WHEN ${netOverheadExpr} > 5 THEN 1 END) as slow_net_count
+      FROM pulse_queue pq
+      JOIN machines m ON m.id = pq.machine_id
+      WHERE pq.status = 'acked'
+        AND pq.delivered_at IS NOT NULL
+        AND pq.acked_at IS NOT NULL
+        AND pq.acked_at >= ${pollTsExpr}
+        AND pq.created_at >= ${sinceUtcSql}
+        ${scopeM.sql}
+      GROUP BY m.client_id
+    `).all(...scopeM.params);
+
     // 4. Estadísticas de pagos por Máquina
     const machineStatsPromise = db.prepare(`
       SELECT 
@@ -471,31 +501,34 @@ router.get('/superadmin-monitoring', async (req, res) => {
         ${scopeM.sql}
     `).get(...scopeM.params);
 
-    // 6. Métricas de Latencia Poll -> ACK (Resumen Global)
+    // 6. Métricas de Latencia Poll -> ACK (Resumen Global + Motivos de Demora)
     const latencySummaryPromise = db.prepare(`
       SELECT 
         COUNT(*) as total_acked,
-        ROUND(AVG(EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as avg_poll_to_ack_s,
-        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as p50_poll_to_ack_s,
-        ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as p95_poll_to_ack_s,
-        ROUND(MAX(EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as max_poll_to_ack_s,
-        ROUND(AVG(GREATEST(0, EXTRACT(EPOCH FROM (pq.delivered_at - pq.created_at))))::numeric, 2) as avg_queue_to_poll_s,
-        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY GREATEST(0, EXTRACT(EPOCH FROM (pq.delivered_at - pq.created_at))))::numeric, 2) as p50_queue_to_poll_s,
+        ROUND(AVG(${pollToAckExpr})::numeric, 2) as avg_poll_to_ack_s,
+        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${pollToAckExpr})::numeric, 2) as p50_poll_to_ack_s,
+        ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ${pollToAckExpr})::numeric, 2) as p95_poll_to_ack_s,
+        ROUND(MAX(${pollToAckExpr})::numeric, 2) as max_poll_to_ack_s,
+        ROUND(AVG(${queueToPollExpr})::numeric, 2) as avg_queue_to_poll_s,
+        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${queueToPollExpr})::numeric, 2) as p50_queue_to_poll_s,
         ROUND(AVG(EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at)))::numeric, 2) as avg_total_s,
-        ROUND(AVG((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)::numeric, 2) as avg_physical_s,
-        ROUND(AVG(GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) - ((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)))::numeric, 2) as avg_net_overhead_s,
-        COUNT(CASE WHEN EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) <= 5 THEN 1 END) as fast_count,
-        COUNT(CASE WHEN EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) > 5 AND EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) <= 15 THEN 1 END) as medium_count,
-        COUNT(CASE WHEN EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) > 15 THEN 1 END) as slow_count,
-        COUNT(CASE WHEN GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) - ((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)) <= 3 THEN 1 END) as net_fast_count,
-        COUNT(CASE WHEN GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) - ((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)) > 3 AND GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) - ((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)) <= 12 THEN 1 END) as net_medium_count,
-        COUNT(CASE WHEN GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) - ((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)) > 12 THEN 1 END) as net_slow_count
+        ROUND(AVG(${physSecExpr})::numeric, 2) as avg_physical_s,
+        ROUND(AVG(${netOverheadExpr})::numeric, 2) as avg_net_overhead_s,
+        COUNT(CASE WHEN ${pollToAckExpr} <= 5 THEN 1 END) as fast_count,
+        COUNT(CASE WHEN ${pollToAckExpr} > 5 AND ${pollToAckExpr} <= 15 THEN 1 END) as medium_count,
+        COUNT(CASE WHEN ${pollToAckExpr} > 15 THEN 1 END) as slow_count,
+        COUNT(CASE WHEN ${netOverheadExpr} <= 3 THEN 1 END) as net_fast_count,
+        COUNT(CASE WHEN ${netOverheadExpr} > 3 AND ${netOverheadExpr} <= 12 THEN 1 END) as net_medium_count,
+        COUNT(CASE WHEN ${netOverheadExpr} > 12 THEN 1 END) as net_slow_count,
+        COUNT(CASE WHEN ${queueToPollExpr} > 6 THEN 1 END) as delay_poll_count,
+        COUNT(CASE WHEN ${physSecExpr} >= 8 THEN 1 END) as delay_physical_count,
+        COUNT(CASE WHEN ${netOverheadExpr} > 5 THEN 1 END) as delay_ack_net_count
       FROM pulse_queue pq
       JOIN machines m ON m.id = pq.machine_id
       WHERE pq.status = 'acked'
         AND pq.delivered_at IS NOT NULL
         AND pq.acked_at IS NOT NULL
-        AND pq.acked_at >= pq.delivered_at
+        AND pq.acked_at >= ${pollTsExpr}
         AND pq.created_at >= ${sinceUtcSql}
         ${scopeM.sql}
     `).get(...scopeM.params);
@@ -515,27 +548,28 @@ router.get('/superadmin-monitoring', async (req, res) => {
         COALESCE(m.pulse_gap_ms, 200) as pulse_gap_ms,
         COUNT(pq.id) as total_acked,
         ROUND(AVG(pq.count)::numeric, 1) as avg_pulses,
-        ROUND(AVG(GREATEST(0, EXTRACT(EPOCH FROM (pq.delivered_at - pq.created_at))))::numeric, 2) as avg_queue_to_poll_s,
-        ROUND(AVG(EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as avg_poll_to_ack_s,
-        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as p50_poll_to_ack_s,
-        ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as p95_poll_to_ack_s,
-        ROUND(MAX(EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)))::numeric, 2) as max_poll_to_ack_s,
-        ROUND(AVG((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)::numeric, 2) as avg_physical_s,
-        ROUND(AVG(GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) - ((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)))::numeric, 2) as avg_net_overhead_s,
+        ROUND(AVG(${queueToPollExpr})::numeric, 2) as avg_queue_to_poll_s,
+        ROUND(AVG(${pollToAckExpr})::numeric, 2) as avg_poll_to_ack_s,
+        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${pollToAckExpr})::numeric, 2) as p50_poll_to_ack_s,
+        ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ${pollToAckExpr})::numeric, 2) as p95_poll_to_ack_s,
+        ROUND(MAX(${pollToAckExpr})::numeric, 2) as max_poll_to_ack_s,
+        ROUND(AVG(${physSecExpr})::numeric, 2) as avg_physical_s,
+        ROUND(AVG(${netOverheadExpr})::numeric, 2) as avg_net_overhead_s,
         ROUND(AVG(EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at)))::numeric, 2) as avg_total_s,
-        COUNT(CASE WHEN EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) > 15 THEN 1 END) as slow_ack_count,
-        COUNT(CASE WHEN GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) - ((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)) > 12 THEN 1 END) as slow_net_count
+        COUNT(CASE WHEN ${pollToAckExpr} > 15 THEN 1 END) as slow_ack_count,
+        COUNT(CASE WHEN ${netOverheadExpr} > 5 THEN 1 END) as slow_net_count,
+        COUNT(CASE WHEN ${queueToPollExpr} > 6 THEN 1 END) as slow_poll_count
       FROM pulse_queue pq
       JOIN machines m ON m.id = pq.machine_id
       LEFT JOIN clients c ON c.id = m.client_id
       WHERE pq.status = 'acked'
         AND pq.delivered_at IS NOT NULL
         AND pq.acked_at IS NOT NULL
-        AND pq.acked_at >= pq.delivered_at
+        AND pq.acked_at >= ${pollTsExpr}
         AND pq.created_at >= ${sinceUtcSql}
         ${scopeM.sql}
       GROUP BY m.id, m.name, m.arduino_id, m.client_id, c.name, m.firmware_version, m.last_rssi, m.poll_interval_s, m.pulse_duration_ms, m.pulse_gap_ms
-      ORDER BY avg_poll_to_ack_s DESC
+      ORDER BY avg_total_s DESC
     `).all(...scopeM.params);
 
     // 8. Detalle de pulsos individuales (recientes y más lentos del período)
@@ -551,12 +585,12 @@ router.get('/superadmin-monitoring', async (req, res) => {
         m.arduino_id,
         COALESCE(c.name, 'Sin cliente') as client_name,
         TO_CHAR(pq.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires', 'DD/MM HH24:MI:SS') as created_at_ar,
-        TO_CHAR(pq.delivered_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI:SS') as delivered_at_ar,
+        TO_CHAR(${pollTsExpr} AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI:SS') as delivered_at_ar,
         TO_CHAR(pq.acked_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI:SS') as acked_at_ar,
-        ROUND(GREATEST(0, EXTRACT(EPOCH FROM (pq.delivered_at - pq.created_at)))::numeric, 2) as queue_to_poll_s,
-        ROUND(EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at))::numeric, 2) as poll_to_ack_s,
-        ROUND(((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0)::numeric, 2) as physical_s,
-        ROUND(GREATEST(0, EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) - ((pq.count * (COALESCE(m.pulse_duration_ms, 200) + COALESCE(m.pulse_gap_ms, 200))) / 1000.0))::numeric, 2) as net_overhead_s,
+        ROUND(${queueToPollExpr}::numeric, 2) as queue_to_poll_s,
+        ROUND(${pollToAckExpr}::numeric, 2) as poll_to_ack_s,
+        ROUND(${physSecExpr}::numeric, 2) as physical_s,
+        ROUND(${netOverheadExpr}::numeric, 2) as net_overhead_s,
         ROUND(EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at))::numeric, 2) as total_s
       FROM pulse_queue pq
       JOIN machines m ON m.id = pq.machine_id
@@ -565,7 +599,7 @@ router.get('/superadmin-monitoring', async (req, res) => {
       WHERE pq.status = 'acked'
         AND pq.delivered_at IS NOT NULL
         AND pq.acked_at IS NOT NULL
-        AND pq.acked_at >= pq.delivered_at
+        AND pq.acked_at >= ${pollTsExpr}
         AND pq.created_at >= ${sinceUtcSql}
         ${scopeM.sql}
     `;
@@ -578,7 +612,7 @@ router.get('/superadmin-monitoring', async (req, res) => {
 
     const slowestPulsesPromise = db.prepare(`
       ${pulseDetailSelectSql}
-      ORDER BY EXTRACT(EPOCH FROM (pq.acked_at - pq.delivered_at)) DESC
+      ORDER BY EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at)) DESC
       LIMIT 40
     `).all(...scopeM.params);
 
@@ -588,6 +622,7 @@ router.get('/superadmin-monitoring', async (req, res) => {
       allClients,
       allMachines,
       clientsRes,
+      latencyByClientRaw,
       machineStatsRes,
       causesRes,
       latencySummaryRaw,
@@ -600,6 +635,7 @@ router.get('/superadmin-monitoring', async (req, res) => {
       allClientsPromise,
       allMachinesPromise,
       clientsResPromise,
+      latencyByClientPromise,
       machineStatsPromise,
       causesResPromise,
       latencySummaryPromise,
@@ -707,6 +743,33 @@ router.get('/superadmin-monitoring', async (req, res) => {
       latencyMachineMap[l.machine_id] = l;
     }
 
+    const latencyClientMap = {};
+    for (const lc of latencyByClientRaw) {
+      latencyClientMap[lc.client_id] = lc;
+    }
+
+    const clientsList = clientsRes.map(c => {
+      const lc = latencyClientMap[c.client_id] || null;
+      return {
+        ...c,
+        total_pagos: Number(c.total_pagos || 0),
+        monto_aprobado: Number(c.monto_aprobado || 0),
+        reembolsos_done: Number(c.reembolsos_done || 0),
+        monto_reembolsado: Number(c.monto_reembolsado || 0),
+        pct_reembolso: Number(c.pct_reembolso || 0),
+        maquinas_activas: Number(c.maquinas_activas || 0),
+        total_acked: lc ? Number(lc.total_acked) : 0,
+        avg_pulses: lc ? Number(lc.avg_pulses) : 0,
+        avg_queue_to_poll_s: lc ? Number(lc.avg_queue_to_poll_s) : null,
+        avg_poll_to_ack_s: lc ? Number(lc.avg_poll_to_ack_s) : null,
+        avg_physical_s: lc ? Number(lc.avg_physical_s) : null,
+        avg_net_overhead_s: lc ? Number(lc.avg_net_overhead_s) : null,
+        avg_total_s: lc ? Number(lc.avg_total_s) : null,
+        slow_poll_count: lc ? Number(lc.slow_poll_count) : 0,
+        slow_net_count: lc ? Number(lc.slow_net_count) : 0,
+      };
+    });
+
     // Filtrar máquinas según el alcance seleccionado
     const scopedMachinesRaw = allMachines.filter(m => {
       if (filterClientId && m.client_id !== filterClientId) return false;
@@ -729,17 +792,26 @@ router.get('/superadmin-monitoring', async (req, res) => {
         state: machineState(m),
         last_seen_at: m.last_seen_at,
         rssi: m.last_rssi,
+        pulse_duration_ms: Number(m.pulse_duration_ms || 200),
+        pulse_gap_ms: Number(m.pulse_gap_ms || 200),
         total_pagos: Number(s.total_pagos),
         reembolsos_done: Number(s.reembolsos_done),
         pct_reembolso: Number(s.pct_reembolso || 0),
         monto_aprobado: Number(s.monto_aprobado),
         monto_reembolsado: Number(s.monto_reembolsado),
+        total_acked: lat ? Number(lat.total_acked) : 0,
+        avg_pulses: lat ? Number(lat.avg_pulses) : null,
+        avg_queue_to_poll_s: lat ? Number(lat.avg_queue_to_poll_s) : null,
         avg_poll_to_ack_s: lat ? Number(lat.avg_poll_to_ack_s) : null,
+        avg_physical_s: lat ? Number(lat.avg_physical_s) : null,
+        avg_net_overhead_s: lat ? Number(lat.avg_net_overhead_s) : null,
+        avg_total_s: lat ? Number(lat.avg_total_s) : null,
         p50_poll_to_ack_s: lat ? Number(lat.p50_poll_to_ack_s) : null,
         p95_poll_to_ack_s: lat ? Number(lat.p95_poll_to_ack_s) : null,
-        avg_queue_to_poll_s: lat ? Number(lat.avg_queue_to_poll_s) : null,
+        slow_poll_count: lat ? Number(lat.slow_poll_count) : 0,
+        slow_net_count: lat ? Number(lat.slow_net_count) : 0,
       };
-    }).sort((a, b) => b.reembolsos_done - a.reembolsos_done || b.total_pagos - a.total_pagos);
+    }).sort((a, b) => (b.avg_total_s || 0) - (a.avg_total_s || 0) || b.reembolsos_done - a.reembolsos_done || b.total_pagos - a.total_pagos);
 
     // 5. Distribución de Firmware (en el alcance seleccionado)
     const fwDist = {};
@@ -818,6 +890,9 @@ router.get('/superadmin-monitoring', async (req, res) => {
           net_fast_count: Number(latencySummaryRaw?.net_fast_count || 0),
           net_medium_count: Number(latencySummaryRaw?.net_medium_count || 0),
           net_slow_count: Number(latencySummaryRaw?.net_slow_count || 0),
+          delay_poll_count: Number(latencySummaryRaw?.delay_poll_count || 0),
+          delay_physical_count: Number(latencySummaryRaw?.delay_physical_count || 0),
+          delay_ack_net_count: Number(latencySummaryRaw?.delay_ack_net_count || 0),
         },
         byMachine: latencyByMachineRaw.map(r => ({
           machine_id: r.machine_id,
@@ -842,6 +917,7 @@ router.get('/superadmin-monitoring', async (req, res) => {
           avg_total_s: Number(r.avg_total_s || 0),
           slow_ack_count: Number(r.slow_ack_count || 0),
           slow_net_count: Number(r.slow_net_count || 0),
+          slow_poll_count: Number(r.slow_poll_count || 0),
         })),
         recentPulses: recentPulses.map(p => ({
           ...p,
@@ -865,7 +941,7 @@ router.get('/superadmin-monitoring', async (req, res) => {
         })),
       },
       dailyTrends: dailyRes,
-      byClient: clientsRes,
+      byClient: clientsList,
       byMachine: machinesList,
       firmwareDistribution: fwDist,
     });

@@ -12,7 +12,7 @@ const num = (n) => Number(n || 0).toLocaleString("es-AR");
 const sec = (n) => {
   if (n == null || isNaN(Number(n))) return '—';
   const v = Number(n);
-  return `${v.toLocaleString("es-AR", { minimumFractionDigits: v < 10 ? 2 : 1, maximumFractionDigits: v < 10 ? 2 : 1 })}s`;
+  return `${v.toLocaleString("es-AR", { minimumFractionDigits: v < 10 ? 1 : 1, maximumFractionDigits: 1 })}s`;
 };
 
 const timeAgo = (ts) => {
@@ -29,31 +29,68 @@ const timeAgo = (ts) => {
   return `hace ${Math.floor(h / 24)}d`;
 };
 
-const getRssiBadge = (rssi) => {
-  if (rssi == null || rssi === 0) return { label: 'Sin señal', cls: 'badge-off' };
-  if (rssi >= -65) return { label: `${rssi} dBm (Excelente)`, cls: 'badge-ok' };
-  if (rssi >= -75) return { label: `${rssi} dBm (Aceptable)`, cls: 'badge-warn' };
-  return { label: `${rssi} dBm (Débil / Inestable)`, cls: 'badge-bad' };
-};
+// Diagnóstico claro en 1 frase según las 3 etapas (Espera Poll, Pulsos Físicos, Red ACK)
+function getDelayReason(queueToPollS, physicalS, netOverheadS, avgPulses) {
+  const q = Number(queueToPollS || 0);
+  const p = Number(physicalS || 0);
+  const net = Number(netOverheadS || 0);
+  const pulses = Number(avgPulses || 1);
 
-const getLatencyTone = (pollToAckS, netOverheadS) => {
-  const net = Number(netOverheadS ?? pollToAckS ?? 0);
-  if (net > 12 || Number(pollToAckS) > 35) {
-    return { bg: 'var(--bad-soft)', fg: 'var(--bad)', label: 'Lenta / Reintento' };
+  if (q === 0 && p === 0 && net === 0) {
+    return { label: 'Sin ventas acreditadas', tone: 'neutral' };
   }
-  if (net > 3.5 || Number(pollToAckS) > 15) {
-    return { bg: 'var(--warn-soft)', fg: 'var(--warn)', label: 'Moderada' };
+
+  // Priorizar problemas reales de conectividad (Reconexión en ACK o en Poll)
+  if (net > 8 && q > 8) {
+    return {
+      label: `📡 Mala conexión (reconecta en Poll +${sec(q)} y en ACK +${sec(net)})`,
+      tone: 'bad',
+    };
   }
-  return { bg: 'var(--ok-soft)', fg: 'var(--ok)', label: 'Rápida' };
+  if (net > 6) {
+    return {
+      label: `📡 Demora de red al confirmar ACK (+${sec(net)} de reconexión)`,
+      tone: 'bad',
+    };
+  }
+  if (q > 7) {
+    return {
+      label: `📡 Tardó en levantar el Poll (${sec(q)} reconectando antes de cobrar)`,
+      tone: 'warn',
+    };
+  }
+  if (p >= 20 && pulses <= 2) {
+    return {
+      label: `⏱️ Pulso largo configurado (${sec(p)} de relé continuo / termo)`,
+      tone: 'info',
+    };
+  }
+  if (p >= 8) {
+    return {
+      label: `⚙️ Demora física por cantidad de pulsos (${pulses} pulsos = ${sec(p)} de relé)`,
+      tone: 'info',
+    };
+  }
+  return {
+    label: '✅ Acreditación rápida y conexión estable',
+    tone: 'ok',
+  };
+}
+
+const TONE_STYLES = {
+  ok: { bg: 'var(--ok-soft)', fg: 'var(--ok)' },
+  warn: { bg: 'var(--warn-soft)', fg: 'var(--warn)' },
+  bad: { bg: 'var(--bad-soft)', fg: 'var(--bad)' },
+  info: { bg: 'var(--tint)', fg: 'var(--ink-2)' },
+  neutral: { bg: 'var(--bg)', fg: 'var(--ink-4)' },
 };
 
 /* ============================================================
-   Componente Gráfico de Tendencia Diaria / Horaria (SVG)
+   1. Gráfico Principal: Ventas vs Reembolsos (SVG)
    ============================================================ */
-function DailyTrendsChart({ trends, period }) {
+function DailyTrendsChart({ trends, period, causes }) {
   const [hoverIndex, setHoverIndex] = useState(null);
 
-  // Índice donde empieza "Hoy" cuando estamos en modo 24h (siempre antes del early return para respetar Rules of Hooks)
   const todayStartIndex = useMemo(() => {
     if (!trends || trends.length === 0 || period !== '24h') return -1;
     return trends.findIndex((t, i) => i > 0 && t.is_today && !trends[i - 1].is_today);
@@ -61,18 +98,18 @@ function DailyTrendsChart({ trends, period }) {
 
   if (!trends || trends.length === 0) {
     return (
-      <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
+      <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-4)', fontSize: 13, marginBottom: 16 }}>
         No hay datos de tendencias para el período seleccionado.
       </div>
     );
   }
 
   const W = 900;
-  const H = 230;
+  const H = 225;
   const padL = 42;
   const padR = 48;
   const padT = 28;
-  const padB = 38;
+  const padB = 36;
   const chartW = W - padL - padR;
   const chartH = H - padT - padB;
 
@@ -85,22 +122,22 @@ function DailyTrendsChart({ trends, period }) {
   const stepX = chartW / Math.max(trends.length, 1);
 
   return (
-    <div className="card" style={{ padding: '18px 20px', position: 'relative' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+    <div className="card" style={{ padding: '18px 20px', position: 'relative', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 14.5, color: 'var(--ink-1)' }}>
-            Evolución: Ventas vs Reembolsos {period === '24h' ? '(Últimas 24 hs en hora Argentina)' : period === 'today' ? '(Hoy desde las 00:00 hs)' : ''}
+          <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--ink-1)' }}>
+            1. Evolución de Ventas vs Reembolsos {period === '24h' ? '(Últimas 24 hs · Hora Argentina)' : period === 'today' ? '(Hoy desde las 00:00 hs)' : ''}
           </div>
           <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-            Barras: volumen de transacciones (Eje izq.) · Línea naranja: tasa de reembolso % (Eje der.)
+            Barras grises: ventas aprobadas · Barras rojas: reembolsos · Línea naranja: % de reembolso
           </div>
         </div>
         <div style={{ display: 'flex', gap: 14, fontSize: 11.5, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--line-2)' }} /> Aprobados
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--ink-5)' }} /> Ventas Aprobadas
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--bad)' }} /> Reembolsados
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--bad)' }} /> Reembolsos
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             <span style={{ width: 14, height: 3, borderRadius: 1.5, background: 'var(--brand)' }} /> Tasa Reembolso (%)
@@ -110,7 +147,6 @@ function DailyTrendsChart({ trends, period }) {
 
       <div style={{ width: '100%', overflowX: 'auto' }}>
         <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
-          {/* Líneas de cuadrícula horizontales y Ejes Y */}
           {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => {
             const y = padT + chartH * (1 - ratio);
             return (
@@ -126,20 +162,11 @@ function DailyTrendsChart({ trends, period }) {
             );
           })}
 
-          {/* Divisor visual entre Ayer y Hoy en vista 24h */}
           {todayStartIndex > 0 && (() => {
             const divX = padL + todayStartIndex * stepX;
             return (
               <g>
-                <line
-                  x1={divX}
-                  y1={padT - 8}
-                  x2={divX}
-                  y2={H - padB}
-                  stroke="var(--ink-4)"
-                  strokeWidth="1"
-                  strokeDasharray="4 3"
-                />
+                <line x1={divX} y1={padT - 8} x2={divX} y2={H - padB} stroke="var(--ink-4)" strokeWidth="1" strokeDasharray="4 3" />
                 <text x={divX - 6} y={padT - 8} textAnchor="end" fontSize="9.5" fill="var(--ink-4)" fontWeight="600">
                   ← Ayer
                 </text>
@@ -150,7 +177,6 @@ function DailyTrendsChart({ trends, period }) {
             );
           })()}
 
-          {/* Barras de ventas y reembolsos */}
           {trends.map((d, i) => {
             const x = padL + i * stepX + stepX * 0.15;
             const barW = Math.max(stepX * 0.7, 5);
@@ -174,15 +200,7 @@ function DailyTrendsChart({ trends, period }) {
                 onMouseLeave={() => setHoverIndex(null)}
                 style={{ cursor: 'pointer' }}
               >
-                {/* Zona interactiva invisible de columna completa para facilitar el hover */}
-                <rect
-                  x={padL + i * stepX}
-                  y={padT}
-                  width={stepX}
-                  height={chartH}
-                  fill="transparent"
-                />
-                {/* Barra Aprobados (Fondo) */}
+                <rect x={padL + i * stepX} y={padT} width={stepX} height={chartH} fill="transparent" />
                 <rect
                   x={x}
                   y={yTotal}
@@ -191,7 +209,6 @@ function DailyTrendsChart({ trends, period }) {
                   rx={2}
                   fill={hoverIndex === i ? "var(--ink-4)" : (d.is_today && period === '24h' ? "var(--ink-5)" : "var(--line)")}
                 />
-                {/* Barra Reembolsos (Frente) */}
                 {ref > 0 && (
                   <rect
                     x={x}
@@ -203,7 +220,6 @@ function DailyTrendsChart({ trends, period }) {
                     opacity={hoverIndex === i ? 1 : 0.85}
                   />
                 )}
-                {/* Etiqueta Eje X */}
                 {showLabel && (
                   <text
                     x={x + barW / 2}
@@ -220,7 +236,6 @@ function DailyTrendsChart({ trends, period }) {
             );
           })}
 
-          {/* Línea de Tasa de Reembolso (%) */}
           {trends.length > 1 && (
             <path
               d={trends.map((d, i) => {
@@ -238,7 +253,6 @@ function DailyTrendsChart({ trends, period }) {
             />
           )}
 
-          {/* Puntos y etiquetas en la línea */}
           {trends.map((d, i) => {
             const x = padL + i * stepX + stepX * 0.5;
             const pct = Number(d.pct_reembolso ?? d.pct_reembolsos ?? 0);
@@ -256,14 +270,7 @@ function DailyTrendsChart({ trends, period }) {
                   strokeWidth="2"
                 />
                 {(isHovered || (pct > 0 && trends.length <= 14)) && (
-                  <text
-                    x={x}
-                    y={y - 8}
-                    textAnchor="middle"
-                    fontSize="10"
-                    fontWeight="700"
-                    fill="var(--brand)"
-                  >
+                  <text x={x} y={y - 8} textAnchor="middle" fontSize="10" fontWeight="700" fill="var(--brand)">
                     {pct}%
                   </text>
                 )}
@@ -273,7 +280,7 @@ function DailyTrendsChart({ trends, period }) {
         </svg>
       </div>
 
-      {/* Tooltip flotante al hacer hover */}
+      {/* Tooltip flotante */}
       {hoverIndex !== null && trends[hoverIndex] && (
         <div
           style={{
@@ -298,324 +305,411 @@ function DailyTrendsChart({ trends, period }) {
           <div style={{ marginTop: 3, color: 'var(--brand)', fontWeight: 700 }}>
             Tasa de Reembolso: {Number(trends[hoverIndex].pct_reembolso ?? trends[hoverIndex].pct_reembolsos ?? 0)}%
           </div>
-          {trends[hoverIndex].acked_count > 0 && (
-            <div style={{ marginTop: 3, paddingTop: 3, borderTop: '1px dashed var(--line)', color: 'var(--ink-2)', fontSize: 11.5 }}>
-              Tiempo Poll → ACK prom.: <b>{sec(trends[hoverIndex].avg_poll_to_ack_s)}</b> (P50: {sec(trends[hoverIndex].p50_poll_to_ack_s)})
-            </div>
-          )}
         </div>
       )}
+
+      {/* Tira compacta de Causas de Reembolso al pie del gráfico */}
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line-2)', display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: 'var(--ink-2)' }}>
+        <span style={{ fontWeight: 600, color: 'var(--ink-3)' }}>Causas de reembolso en el período:</span>
+        <span>
+          <b style={{ color: 'var(--bad)' }} className="mono">{num(causes.timeout_expired)}</b> por Timeout sin ACK (corte de red)
+        </span>
+        <span>·</span>
+        <span>
+          <b style={{ color: 'var(--warn)' }} className="mono">{num(causes.manual_after_ack)}</b> devoluciones manuales post-ACK
+        </span>
+        <span>·</span>
+        <span>
+          <b style={{ color: 'var(--ink-2)' }} className="mono">{num(causes.out_of_service_zero_pulses)}</b> por monto menor a 1 pulso / fuera de servicio
+        </span>
+      </div>
     </div>
   );
 }
 
 /* ============================================================
-   Sección: Tiempos desde Poll hasta el ACK (Velocidad de Acreditación)
+   2. Sección Simplificada: Esquema de Demoras y Diagnóstico
    ============================================================ */
-function PollToAckSection({ latency, trends, onSelectMachine, activeMachineId }) {
-  const [pulseTab, setPulseTab] = useState('recent'); // 'recent' | 'slowest'
-  const [machineSearch, setMachineSearch] = useState('');
+function AccreditationDelaysSection({
+  latency,
+  byClient,
+  byMachine,
+  selectedClientId,
+  selectedMachineId,
+  onSelectClient,
+  onSelectMachine,
+}) {
+  const [activeTab, setActiveTab] = useState('clients'); // 'clients' | 'machines' | 'pulses'
+  const [pulseMode, setPulseMode] = useState('slowest'); // 'slowest' | 'recent'
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Si el usuario filtra un cliente arriba, mostramos directamente sus máquinas
+  useEffect(() => {
+    if (selectedMachineId) {
+      setActiveTab('pulses');
+    } else if (selectedClientId && activeTab === 'clients') {
+      setActiveTab('machines');
+    }
+  }, [selectedClientId, selectedMachineId]);
 
   const summary = latency?.summary || {
     total_acked: 0,
-    avg_poll_to_ack_s: 0,
-    p50_poll_to_ack_s: 0,
-    p95_poll_to_ack_s: 0,
-    max_poll_to_ack_s: 0,
     avg_queue_to_poll_s: 0,
-    p50_queue_to_poll_s: 0,
-    avg_total_s: 0,
     avg_physical_s: 0,
     avg_net_overhead_s: 0,
-    fast_count: 0,
-    medium_count: 0,
-    slow_count: 0,
-    net_fast_count: 0,
-    net_medium_count: 0,
-    net_slow_count: 0,
+    avg_poll_to_ack_s: 0,
+    avg_total_s: 0,
+    delay_poll_count: 0,
+    delay_physical_count: 0,
+    delay_ack_net_count: 0,
   };
 
-  const totalAcked = Math.max(summary.total_acked, 0);
-  const netFastPct = totalAcked > 0 ? Math.round((summary.net_fast_count / totalAcked) * 100) : 0;
-  const fastPct = totalAcked > 0 ? Math.round((summary.fast_count / totalAcked) * 100) : 0;
-  const mediumPct = totalAcked > 0 ? Math.round((summary.medium_count / totalAcked) * 100) : 0;
-  const slowPct = totalAcked > 0 ? Math.round((summary.slow_count / totalAcked) * 100) : 0;
+  const filteredClients = useMemo(() => {
+    const list = byClient || [];
+    if (!searchQuery.trim()) return list;
+    const q = searchQuery.toLowerCase();
+    return list.filter(c => c.client_name && c.client_name.toLowerCase().includes(q));
+  }, [byClient, searchQuery]);
 
-  const filteredByMachine = useMemo(() => {
-    const list = latency?.byMachine || [];
-    if (!machineSearch.trim()) return list;
-    const q = machineSearch.toLowerCase();
+  const filteredMachines = useMemo(() => {
+    const list = byMachine || [];
+    if (!searchQuery.trim()) return list;
+    const q = searchQuery.toLowerCase();
     return list.filter(m =>
-      (m.machine_name && m.machine_name.toLowerCase().includes(q)) ||
+      (m.name && m.name.toLowerCase().includes(q)) ||
       (m.client_name && m.client_name.toLowerCase().includes(q)) ||
       (m.arduino_id && m.arduino_id.toLowerCase().includes(q))
     );
-  }, [latency?.byMachine, machineSearch]);
+  }, [byMachine, searchQuery]);
 
-  const pulsesList = pulseTab === 'slowest'
-    ? (latency?.slowestPulses || [])
-    : (latency?.recentPulses || []);
+  const pulsesList = useMemo(() => {
+    const raw = pulseMode === 'slowest' ? (latency?.slowestPulses || []) : (latency?.recentPulses || []);
+    if (!searchQuery.trim()) return raw;
+    const q = searchQuery.toLowerCase();
+    return raw.filter(p =>
+      (p.machine_name && p.machine_name.toLowerCase().includes(q)) ||
+      (p.client_name && p.client_name.toLowerCase().includes(q)) ||
+      (p.pulse_id && p.pulse_id.toLowerCase().includes(q))
+    );
+  }, [latency?.slowestPulses, latency?.recentPulses, pulseMode, searchQuery]);
 
-  const physSharePct = summary.avg_poll_to_ack_s > 0
-    ? Math.min(100, Math.round((summary.avg_physical_s / summary.avg_poll_to_ack_s) * 100))
-    : 0;
+  const totalAcked = Math.max(summary.total_acked, 0);
 
   return (
-    <div className="card" style={{ padding: 20, marginBottom: 16 }}>
-      {/* Encabezado de la sección */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ color: 'var(--brand)', display: 'inline-flex' }}>{Icon.clock}</span>
-            <span style={{ fontWeight: 700, fontSize: 16, color: 'var(--ink-1)' }}>
-              Tiempos de Acreditación: desde Poll hasta ACK
+    <div className="card" style={{ padding: 20 }}>
+      {/* Título de la sección */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, fontSize: 15.5, color: 'var(--ink-1)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: 'var(--brand)', display: 'inline-flex' }}>{Icon.clock}</span>
+          2. Diagnóstico de Demoras de Acreditación (Pago → Poll → ACK)
+        </div>
+        <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: 2 }}>
+          Desglose del tiempo total desde que entra el pago hasta que la máquina termina de acreditar, separando <b>reconexiones de internet</b> vs <b>cantidad de pulsos físicos</b>.
+        </div>
+      </div>
+
+      {/* ESQUEMA VISUAL: Las 3 Etapas que suman el Tiempo Total */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+          gap: 12,
+          marginBottom: 18,
+          background: 'var(--bg)',
+          padding: 14,
+          borderRadius: 8,
+          border: '1px solid var(--line)'
+        }}
+      >
+        {/* Etapa 1: Espera de Poll */}
+        <div style={{ background: 'var(--panel)', padding: '12px 14px', borderRadius: 6, borderLeft: '4px solid var(--warn)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+            Etapa 1 · Pago → Poll
+          </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 4 }}>
+            <span style={{ fontSize: 22, fontWeight: 700, color: summary.avg_queue_to_poll_s > 6 ? 'var(--bad)' : 'var(--ink-1)' }} className="mono">
+              {sec(summary.avg_queue_to_poll_s)}
             </span>
+            <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Espera de Poll</span>
           </div>
-          <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: 4, maxWidth: 780 }}>
-            Auditoría de cuánto demora cada máquina en levantar el pago y confirmar los pulsos. Permite distinguir si la demora percibida se debe a <b>la duración física de los pulsos del relé</b> (ej. 24 pulsos × 0.5s = 12s) o a <b>demoras reales de red WiFi / reintentos</b>.
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 6, lineHeight: 1.35 }}>
+            Lo que tarda la placa en venir a buscar el pago (normal ≤ 3.5s).
           </div>
-        </div>
-
-        <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 12px', fontSize: 11.5, color: 'var(--ink-2)' }}>
-          <div><b>1. Espera de Poll (Pago → Poll):</b> Tiempo hasta que el Arduino consulta <code>/poll</code> (normal: 1s a 3.5s).</div>
-          <div style={{ marginTop: 2 }}><b>2. Poll → ACK:</b> Tiempo que tarda en enviar los pulsos físicos al monedero + confirmar <code>/ack</code>.</div>
-        </div>
-      </div>
-
-      {/* KPIs de Latencia Poll -> ACK */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(195px, 1fr))', gap: 12, marginBottom: 18 }}>
-        {/* KPI 1: Tiempo Poll -> ACK */}
-        <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>
-            Tiempo Poll → ACK (Prom.)
-          </div>
-          <div style={{ fontSize: 23, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
-            {sec(summary.avg_poll_to_ack_s)}
-          </div>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 4 }} className="mono">
-            Mediana (P50): <b>{sec(summary.p50_poll_to_ack_s)}</b> · P95: <b>{sec(summary.p95_poll_to_ack_s)}</b>
+          <div style={{ fontSize: 11.5, marginTop: 6, paddingTop: 6, borderTop: '1px dashed var(--line)', color: summary.delay_poll_count > 0 ? 'var(--warn)' : 'var(--ok)', fontWeight: 600 }}>
+            {summary.delay_poll_count > 0
+              ? `⚠️ ${num(summary.delay_poll_count)} ventas tardaron >6s (reconexión previa)`
+              : '✅ Sin demoras al levantar el poll'}
           </div>
         </div>
 
-        {/* KPI 2: Desglose Físico vs Red */}
-        <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>
-            Desglose Poll → ACK (Relé vs Red)
+        {/* Etapa 2A: Pulsos Físicos */}
+        <div style={{ background: 'var(--panel)', padding: '12px 14px', borderRadius: 6, borderLeft: '4px solid var(--ink-3)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+            Etapa 2A · En el Poll → ACK
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-            <div>
-              <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">{sec(summary.avg_physical_s)}</span>
-              <span style={{ fontSize: 11, color: 'var(--ink-3)', marginLeft: 4 }}>relé físico</span>
-            </div>
-            <div>
-              <span style={{ fontSize: 17, fontWeight: 700, color: summary.avg_net_overhead_s > 5 ? 'var(--bad)' : 'var(--ok)' }} className="mono">
-                +{sec(summary.avg_net_overhead_s)}
-              </span>
-              <span style={{ fontSize: 11, color: 'var(--ink-3)', marginLeft: 4 }}>red/ESP32</span>
-            </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 4 }}>
+            <span style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
+              {sec(summary.avg_physical_s)}
+            </span>
+            <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Pulsos Físicos (Relé)</span>
           </div>
-          <div style={{ height: 6, background: 'var(--line)', borderRadius: 3, overflow: 'hidden', marginTop: 8, display: 'flex' }}>
-            <div style={{ width: `${physSharePct}%`, background: 'var(--ink-3)' }} title={`Relé físico: ${sec(summary.avg_physical_s)}`} />
-            <div style={{ width: `${100 - physSharePct}%`, background: summary.avg_net_overhead_s > 5 ? 'var(--bad)' : 'var(--ok)' }} title={`Demora de red: ${sec(summary.avg_net_overhead_s)}`} />
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 6, lineHeight: 1.35 }}>
+            Lo que tarda el relé enviando los pulsos a la máquina antes del ACK.
+          </div>
+          <div style={{ fontSize: 11.5, marginTop: 6, paddingTop: 6, borderTop: '1px dashed var(--line)', color: 'var(--ink-2)', fontWeight: 600 }}>
+            ⚙️ {num(summary.delay_physical_count)} ventas con ≥8s de pulso físico
           </div>
         </div>
 
-        {/* KPI 3: Espera de Poll */}
-        <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>
-            Espera hasta el Poll (Pago → Poll)
+        {/* Etapa 2B: Demora de Red / Reconexión ACK */}
+        <div style={{ background: 'var(--panel)', padding: '12px 14px', borderRadius: 6, borderLeft: '4px solid var(--bad)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+            Etapa 2B · En el Poll → ACK
           </div>
-          <div style={{ fontSize: 23, fontWeight: 700, color: summary.avg_queue_to_poll_s > 10 ? 'var(--warn)' : 'var(--ink-1)' }} className="mono">
-            {sec(summary.avg_queue_to_poll_s)}
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 4 }}>
+            <span style={{ fontSize: 22, fontWeight: 700, color: summary.avg_net_overhead_s > 5 ? 'var(--bad)' : 'var(--ok)' }} className="mono">
+              +{sec(summary.avg_net_overhead_s)}
+            </span>
+            <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Red / Reconexión ACK</span>
           </div>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 4 }} className="mono">
-            Mediana (P50): <b>{sec(summary.p50_queue_to_poll_s)}</b> · Intervalo poll: 3s
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 6, lineHeight: 1.35 }}>
+            Tiempo de internet para confirmar el ACK tras pulsar (normal ≤ 2s).
           </div>
-        </div>
-
-        {/* KPI 4: Tiempo Total Pago -> ACK */}
-        <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>
-            Tiempo Total (Pago → ACK)
-          </div>
-          <div style={{ fontSize: 23, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
-            {sec(summary.avg_total_s)}
-          </div>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 4 }}>
-            Sobre <b>{num(totalAcked)}</b> acreditaciones confirmadas
+          <div style={{ fontSize: 11.5, marginTop: 6, paddingTop: 6, borderTop: '1px dashed var(--line)', color: summary.delay_ack_net_count > 0 ? 'var(--bad)' : 'var(--ok)', fontWeight: 600 }}>
+            {summary.delay_ack_net_count > 0
+              ? `📡 ${num(summary.delay_ack_net_count)} ventas con reconexión en ACK (>5s)`
+              : '✅ Confirmación de ACK inmediata'}
           </div>
         </div>
 
-        {/* KPI 5: Distribución por Tramos */}
-        <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 8, padding: '12px 14px' }}>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>
-            Distribución Poll → ACK
+        {/* Total Punta a Punta */}
+        <div style={{ background: 'var(--panel)', padding: '12px 14px', borderRadius: 6, borderLeft: '4px solid var(--brand)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--brand)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+            Resultado · Pago → ACK
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--ok)', fontWeight: 600 }}>● ≤ 5s (Rápidas):</span>
-              <span className="mono"><b>{num(summary.fast_count)}</b> ({fastPct}%)</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--warn)', fontWeight: 600 }}>● 5s–15s (Multinivel/Pulsos):</span>
-              <span className="mono"><b>{num(summary.medium_count)}</b> ({mediumPct}%)</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--bad)', fontWeight: 600 }}>● &gt; 15s (Lentas / Termos):</span>
-              <span className="mono"><b>{num(summary.slow_count)}</b> ({slowPct}%)</span>
-            </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 4 }}>
+            <span style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
+              {sec(summary.avg_total_s)}
+            </span>
+            <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>Total Promedio</span>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4, borderTop: '1px solid var(--line-2)', paddingTop: 3 }}>
-            Sin demora de red (≤3s extra): <b>{netFastPct}%</b>
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 6, lineHeight: 1.35 }}>
+            Poll → ACK total: <b>{sec(summary.avg_poll_to_ack_s)}</b> ({sec(summary.avg_physical_s)} relé + {sec(summary.avg_net_overhead_s)} red).
+          </div>
+          <div style={{ fontSize: 11.5, marginTop: 6, paddingTop: 6, borderTop: '1px dashed var(--line)', color: 'var(--ink-2)' }}>
+            Base: <b>{num(totalAcked)}</b> ventas acreditadas
           </div>
         </div>
       </div>
 
-      {/* Tabla 1 de la sección: Ranking de Tiempos Poll -> ACK por Máquina */}
-      <div style={{ border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden', marginBottom: 18 }}>
-        <div style={{ padding: '12px 16px', background: 'var(--bg)', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 13.5, color: 'var(--ink-1)' }}>
-              Tiempos Poll → ACK por Máquina (Ordenado de más lenta a más rápida)
+      {/* Barra de Navegación de Pestañas (Por Cliente | Por Máquina | Detalle de Ventas) */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+        <div style={{ display: 'inline-flex', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, padding: 3, gap: 2 }}>
+          <button
+            onClick={() => setActiveTab('clients')}
+            style={{
+              padding: '6px 12px',
+              fontSize: 12.5,
+              borderRadius: 4,
+              border: 'none',
+              background: activeTab === 'clients' ? 'var(--panel)' : 'transparent',
+              boxShadow: activeTab === 'clients' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+              color: activeTab === 'clients' ? 'var(--ink-1)' : 'var(--ink-3)',
+              fontWeight: activeTab === 'clients' ? 600 : 400,
+              cursor: 'pointer'
+            }}
+          >
+            Por Cliente ({filteredClients.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('machines')}
+            style={{
+              padding: '6px 12px',
+              fontSize: 12.5,
+              borderRadius: 4,
+              border: 'none',
+              background: activeTab === 'machines' ? 'var(--panel)' : 'transparent',
+              boxShadow: activeTab === 'machines' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+              color: activeTab === 'machines' ? 'var(--ink-1)' : 'var(--ink-3)',
+              fontWeight: activeTab === 'machines' ? 600 : 400,
+              cursor: 'pointer'
+            }}
+          >
+            Por Máquina ({filteredMachines.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('pulses')}
+            style={{
+              padding: '6px 12px',
+              fontSize: 12.5,
+              borderRadius: 4,
+              border: 'none',
+              background: activeTab === 'pulses' ? 'var(--panel)' : 'transparent',
+              boxShadow: activeTab === 'pulses' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+              color: activeTab === 'pulses' ? 'var(--ink-1)' : 'var(--ink-3)',
+              fontWeight: activeTab === 'pulses' ? 600 : 400,
+              cursor: 'pointer'
+            }}
+          >
+            Ventas Puntuales ({pulsesList.length})
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {activeTab === 'pulses' && (
+            <div style={{ display: 'inline-flex', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, padding: 2 }}>
+              <button
+                onClick={() => setPulseMode('slowest')}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: 12,
+                  borderRadius: 4,
+                  border: 'none',
+                  background: pulseMode === 'slowest' ? 'var(--bad)' : 'transparent',
+                  color: pulseMode === 'slowest' ? '#fff' : 'var(--ink-2)',
+                  cursor: 'pointer',
+                  fontWeight: pulseMode === 'slowest' ? 600 : 400
+                }}
+              >
+                Top 40 más lentas
+              </button>
+              <button
+                onClick={() => setPulseMode('recent')}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: 12,
+                  borderRadius: 4,
+                  border: 'none',
+                  background: pulseMode === 'recent' ? 'var(--brand)' : 'transparent',
+                  color: pulseMode === 'recent' ? '#fff' : 'var(--ink-2)',
+                  cursor: 'pointer',
+                  fontWeight: pulseMode === 'recent' ? 600 : 400
+                }}
+              >
+                Últimas 40 recientes
+              </button>
             </div>
-            <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-              Compará cuánto demora cada máquina en tomar el poll, pulsar el relé y devolver el ACK
-            </div>
-          </div>
+          )}
+
           <input
             type="text"
-            placeholder="Filtrar máquina o cliente en esta tabla…"
-            value={machineSearch}
-            onChange={e => setMachineSearch(e.target.value)}
+            placeholder="Buscar cliente o máquina…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
             style={{
-              padding: '5px 10px',
-              fontSize: 12,
+              padding: '6px 12px',
+              fontSize: 12.5,
               border: '1px solid var(--line)',
               borderRadius: 6,
               background: 'var(--panel)',
               color: 'var(--ink-1)',
-              width: 230
+              width: 210
             }}
           />
         </div>
+      </div>
 
-        <div className="table-wrapper" tabIndex={0} role="region" aria-label="Tiempos Poll a ACK por máquina" style={{ overflowX: 'auto', maxHeight: 380 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+      {/* TAB 1: POR CLIENTE */}
+      {activeTab === 'clients' && (
+        <div className="table-wrapper" tabIndex={0} role="region" aria-label="Demoras y reembolsos por cliente" style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--panel)', textAlign: 'left', position: 'sticky', top: 0, zIndex: 1 }}>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Máquina / Cliente</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>ACKs</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Pulsos / Venta</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Espera Poll (Pago → Poll)</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Poll → ACK (Prom / P50 / P95)</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Relé Físico vs Demora Red</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Total (Pago → ACK)</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Diagnóstico</th>
+              <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg)', textAlign: 'left' }}>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Cliente</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Ventas / Reemb.</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>1. Espera Poll</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>2. Pulsos Físicos</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>3. Red ACK</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Total (Pago → ACK)</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Motivo Principal de Demora</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Acción</th>
               </tr>
             </thead>
             <tbody>
-              {filteredByMachine.length === 0 ? (
+              {filteredClients.length === 0 ? (
                 <tr>
-                  <td colSpan="8" style={{ padding: 20, textAlign: 'center', color: 'var(--ink-4)' }}>
-                    No hay acreditaciones registradas para los filtros seleccionados.
+                  <td colSpan="8" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-4)' }}>
+                    No hay clientes para mostrar.
                   </td>
                 </tr>
               ) : (
-                filteredByMachine.map((m) => {
-                  const tone = getLatencyTone(m.avg_poll_to_ack_s, m.avg_net_overhead_s);
-                  const isSelected = activeMachineId === m.machine_id;
+                filteredClients.map((c) => {
+                  const pct = Number(c.pct_reembolso || 0);
+                  const isClientSelected = selectedClientId === c.client_id;
+                  const reason = getDelayReason(c.avg_queue_to_poll_s, c.avg_physical_s, c.avg_net_overhead_s, c.avg_pulses);
+                  const reasonStyle = TONE_STYLES[reason.tone] || TONE_STYLES.neutral;
+
                   return (
-                    <tr
-                      key={m.machine_id}
-                      style={{
-                        borderBottom: '1px solid var(--line-2)',
-                        background: isSelected ? 'var(--tint)' : 'transparent'
-                      }}
-                    >
-                      <td style={{ padding: '10px 12px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Link to={`/maquinas/${m.machine_id}`} style={{ fontWeight: 600, color: 'var(--ink-1)', textDecoration: 'none' }}>
-                            {m.machine_name}
-                          </Link>
-                          <button
-                            onClick={() => onSelectMachine(isSelected ? '' : m.machine_id)}
-                            title={isSelected ? "Quitar filtro de máquina" : "Filtrar todo el monitoreo por esta máquina"}
-                            style={{
-                              padding: '1px 6px',
-                              fontSize: 10.5,
-                              borderRadius: 4,
-                              border: '1px solid var(--line)',
-                              background: isSelected ? 'var(--brand)' : 'var(--bg)',
-                              color: isSelected ? '#fff' : 'var(--ink-3)',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            {isSelected ? 'Filtrando ✓' : 'Filtrar'}
-                          </button>
-                        </div>
-                        <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-                          {m.client_name} · <span className="mono">{m.arduino_id}</span> {m.rssi ? `(${m.rssi} dBm)` : ''}
+                    <tr key={c.client_id} style={{ borderBottom: '1px solid var(--line-2)', background: isClientSelected ? 'var(--tint)' : 'transparent' }}>
+                      <td style={{ padding: '11px 12px' }}>
+                        <Link to={`/clientes/${c.client_id}`} style={{ fontWeight: 600, color: 'var(--ink-1)', textDecoration: 'none' }}>
+                          {c.client_name}
+                        </Link>
+                        <div style={{ fontSize: 11, color: 'var(--ink-4)' }}>
+                          {c.maquinas_activas} {c.maquinas_activas === 1 ? 'máquina' : 'máquinas'}
                         </div>
                       </td>
 
-                      <td style={{ padding: '10px 12px' }} className="mono">
-                        {num(m.total_acked)}
-                      </td>
-
-                      <td style={{ padding: '10px 12px' }} className="mono">
-                        <b>{m.avg_pulses}</b> pulsos
-                        <div style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>
-                          {m.pulse_duration_ms}ms + {m.pulse_gap_ms}ms
+                      <td style={{ padding: '11px 12px' }} className="mono">
+                        <b>{num(c.total_pagos)}</b> ventas
+                        <div style={{ fontSize: 11, color: c.reembolsos_done > 0 ? 'var(--bad)' : 'var(--ink-4)' }}>
+                          {num(c.reembolsos_done)} reemb. ({pct}%)
                         </div>
                       </td>
 
-                      <td style={{ padding: '10px 12px', color: m.avg_queue_to_poll_s > 10 ? 'var(--bad)' : 'var(--ink-2)' }} className="mono">
-                        <b>{sec(m.avg_queue_to_poll_s)}</b>
+                      <td style={{ padding: '11px 12px', color: c.avg_queue_to_poll_s > 6 ? 'var(--bad)' : 'var(--ink-1)', fontWeight: c.avg_queue_to_poll_s > 6 ? 700 : 400 }} className="mono">
+                        {sec(c.avg_queue_to_poll_s)}
                       </td>
 
-                      <td style={{ padding: '10px 12px' }} className="mono">
+                      <td style={{ padding: '11px 12px' }} className="mono">
+                        {sec(c.avg_physical_s)}
+                        {c.avg_pulses > 0 && (
+                          <div style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>
+                            ~{c.avg_pulses} pulsos
+                          </div>
+                        )}
+                      </td>
+
+                      <td style={{ padding: '11px 12px', color: c.avg_net_overhead_s > 5 ? 'var(--bad)' : 'var(--ok)', fontWeight: c.avg_net_overhead_s > 5 ? 700 : 600 }} className="mono">
+                        {c.avg_net_overhead_s != null ? `+${sec(c.avg_net_overhead_s)}` : '—'}
+                      </td>
+
+                      <td style={{ padding: '11px 12px', fontWeight: 700, fontSize: 13.5 }} className="mono">
+                        {sec(c.avg_total_s)}
+                      </td>
+
+                      <td style={{ padding: '11px 12px' }}>
                         <span
                           style={{
                             display: 'inline-block',
-                            padding: '2px 7px',
+                            padding: '3px 8px',
                             borderRadius: 4,
-                            fontWeight: 700,
-                            background: tone.bg,
-                            color: tone.fg
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            background: reasonStyle.bg,
+                            color: reasonStyle.fg
                           }}
                         >
-                          {sec(m.avg_poll_to_ack_s)}
+                          {reason.label}
                         </span>
-                        <div style={{ fontSize: 10.5, color: 'var(--ink-4)', marginTop: 2 }}>
-                          P50: {sec(m.p50_poll_to_ack_s)} · P95: {sec(m.p95_poll_to_ack_s)}
-                        </div>
                       </td>
 
-                      <td style={{ padding: '10px 12px' }} className="mono">
-                        <div>Relé: <b>{sec(m.avg_physical_s)}</b></div>
-                        <div style={{ fontSize: 11, color: m.avg_net_overhead_s > 8 ? 'var(--bad)' : 'var(--ink-3)' }}>
-                          Red: <b>+{sec(m.avg_net_overhead_s)}</b>
-                        </div>
-                      </td>
-
-                      <td style={{ padding: '10px 12px', fontWeight: 600 }} className="mono">
-                        {sec(m.avg_total_s)}
-                      </td>
-
-                      <td style={{ padding: '10px 12px', fontSize: 11.5 }}>
-                        {m.avg_net_overhead_s > 12 ? (
-                          <span style={{ color: 'var(--bad)', fontWeight: 600 }}>
-                            ⚠️ Demora de red / reintentos ({m.slow_net_count} lentas)
-                          </span>
-                        ) : m.avg_physical_s >= 10 ? (
-                          <span style={{ color: 'var(--ink-2)' }}>
-                            ⏱️ Demora por pulsos físicos ({sec(m.avg_physical_s)} de relé)
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--ok)', fontWeight: 600 }}>
-                            ✅ Acreditación rápida
-                          </span>
-                        )}
+                      <td style={{ padding: '11px 12px' }}>
+                        <button
+                          onClick={() => onSelectClient(isClientSelected ? '' : c.client_id)}
+                          style={{
+                            padding: '4px 10px',
+                            fontSize: 11.5,
+                            borderRadius: 4,
+                            border: '1px solid var(--line)',
+                            background: isClientSelected ? 'var(--brand)' : 'var(--panel)',
+                            color: isClientSelected ? '#fff' : 'var(--ink-2)',
+                            cursor: 'pointer',
+                            fontWeight: 600
+                          }}
+                        >
+                          {isClientSelected ? 'Quitar filtro' : 'Ver máquinas →'}
+                        </button>
                       </td>
                     </tr>
                   );
@@ -624,122 +718,221 @@ function PollToAckSection({ latency, trends, onSelectMachine, activeMachineId })
             </tbody>
           </table>
         </div>
-      </div>
+      )}
 
-      {/* Tabla 2 de la sección: Auditoría de Transacciones Individuales (Poll -> ACK) */}
-      <div style={{ border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
-        <div style={{ padding: '12px 16px', background: 'var(--bg)', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 13.5, color: 'var(--ink-1)' }}>
-              Detalle de Transacciones: Tiempos de Poll y ACK
-            </div>
-            <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-              Trazabilidad segundo a segundo de cada venta acreditada (Hora local Argentina)
-            </div>
-          </div>
+      {/* TAB 2: POR MÁQUINA */}
+      {activeTab === 'machines' && (
+        <div className="table-wrapper" tabIndex={0} role="region" aria-label="Demoras y salud por máquina" style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg)', textAlign: 'left' }}>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Máquina / Cliente</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Señal & Estado</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Ventas / Reemb.</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>1. Espera Poll</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>2. Pulsos Físicos</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>3. Red ACK</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Total (Pago → ACK)</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Motivo de Demora</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredMachines.length === 0 ? (
+                <tr>
+                  <td colSpan="9" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-4)' }}>
+                    No se encontraron máquinas con el filtro actual.
+                  </td>
+                </tr>
+              ) : (
+                filteredMachines.map((m) => {
+                  const isSelected = selectedMachineId === m.id;
+                  const reason = getDelayReason(m.avg_queue_to_poll_s, m.avg_physical_s, m.avg_net_overhead_s, m.avg_pulses);
+                  const reasonStyle = TONE_STYLES[reason.tone] || TONE_STYLES.neutral;
 
-          <div style={{ display: 'inline-flex', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 6, padding: 2 }}>
-            <button
-              onClick={() => setPulseTab('recent')}
-              style={{
-                padding: '4px 10px',
-                fontSize: 12,
-                borderRadius: 4,
-                border: 'none',
-                background: pulseTab === 'recent' ? 'var(--brand)' : 'transparent',
-                color: pulseTab === 'recent' ? '#fff' : 'var(--ink-2)',
-                cursor: 'pointer',
-                fontWeight: pulseTab === 'recent' ? 600 : 400
-              }}
-            >
-              Últimas 40 acreditaciones
-            </button>
-            <button
-              onClick={() => setPulseTab('slowest')}
-              style={{
-                padding: '4px 10px',
-                fontSize: 12,
-                borderRadius: 4,
-                border: 'none',
-                background: pulseTab === 'slowest' ? 'var(--bad)' : 'transparent',
-                color: pulseTab === 'slowest' ? '#fff' : 'var(--ink-2)',
-                cursor: 'pointer',
-                fontWeight: pulseTab === 'slowest' ? 600 : 400
-              }}
-            >
-              Top 40 más lentas del período
-            </button>
-          </div>
+                  return (
+                    <tr key={m.id} style={{ borderBottom: '1px solid var(--line-2)', background: isSelected ? 'var(--tint)' : 'transparent' }}>
+                      <td style={{ padding: '11px 12px' }}>
+                        <Link to={`/maquinas/${m.id}`} style={{ fontWeight: 600, color: 'var(--ink-1)', textDecoration: 'none' }}>
+                          {m.name}
+                        </Link>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                          {m.client_name} · <span className="mono">{m.arduino_id}</span>
+                        </div>
+                      </td>
+
+                      <td style={{ padding: '11px 12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: '50%',
+                              background: m.state === 'online' ? 'var(--ok)' : m.state === 'out_of_service' ? 'var(--warn)' : 'var(--bad)'
+                            }}
+                          />
+                          <span style={{ fontSize: 12 }}>
+                            {m.rssi ? `${m.rssi} dBm` : (m.state === 'online' ? 'Online' : 'Offline')}
+                          </span>
+                          <span style={{ fontSize: 10.5, color: 'var(--ink-4)' }} className="mono">
+                            v{m.firmware_version}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>
+                          Visto {timeAgo(m.last_seen_at)}
+                        </div>
+                      </td>
+
+                      <td style={{ padding: '11px 12px' }} className="mono">
+                        <b>{num(m.total_pagos)}</b> ventas
+                        <div style={{ fontSize: 11, color: m.reembolsos_done > 0 ? 'var(--bad)' : 'var(--ink-4)' }}>
+                          {num(m.reembolsos_done)} reemb. ({m.pct_reembolso}%)
+                        </div>
+                      </td>
+
+                      <td style={{ padding: '11px 12px', color: m.avg_queue_to_poll_s > 6 ? 'var(--bad)' : 'var(--ink-1)', fontWeight: m.avg_queue_to_poll_s > 6 ? 700 : 400 }} className="mono">
+                        {sec(m.avg_queue_to_poll_s)}
+                      </td>
+
+                      <td style={{ padding: '11px 12px' }} className="mono">
+                        {sec(m.avg_physical_s)}
+                        {m.avg_pulses != null && (
+                          <div style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>
+                            ~{m.avg_pulses} pulsos
+                          </div>
+                        )}
+                      </td>
+
+                      <td style={{ padding: '11px 12px', color: m.avg_net_overhead_s > 5 ? 'var(--bad)' : 'var(--ok)', fontWeight: m.avg_net_overhead_s > 5 ? 700 : 600 }} className="mono">
+                        {m.avg_net_overhead_s != null ? `+${sec(m.avg_net_overhead_s)}` : '—'}
+                      </td>
+
+                      <td style={{ padding: '11px 12px', fontWeight: 700, fontSize: 13.5 }} className="mono">
+                        {sec(m.avg_total_s)}
+                      </td>
+
+                      <td style={{ padding: '11px 12px' }}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '3px 8px',
+                            borderRadius: 4,
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            background: reasonStyle.bg,
+                            color: reasonStyle.fg
+                          }}
+                        >
+                          {reason.label}
+                        </span>
+                      </td>
+
+                      <td style={{ padding: '11px 12px' }}>
+                        <button
+                          onClick={() => onSelectMachine(isSelected ? '' : m.id)}
+                          style={{
+                            padding: '4px 10px',
+                            fontSize: 11.5,
+                            borderRadius: 4,
+                            border: '1px solid var(--line)',
+                            background: isSelected ? 'var(--brand)' : 'var(--panel)',
+                            color: isSelected ? '#fff' : 'var(--ink-2)',
+                            cursor: 'pointer',
+                            fontWeight: 600
+                          }}
+                        >
+                          {isSelected ? 'Quitar filtro' : 'Ver ventas →'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
+      )}
 
-        <div className="table-wrapper" tabIndex={0} role="region" aria-label="Detalle de transacciones Poll a ACK" style={{ overflowX: 'auto', maxHeight: 360 }}>
+      {/* TAB 3: DETALLE DE VENTAS PUNTUALES */}
+      {activeTab === 'pulses' && (
+        <div className="table-wrapper" tabIndex={0} role="region" aria-label="Detalle de ventas y tiempos de acreditación" style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--panel)', textAlign: 'left', position: 'sticky', top: 0, zIndex: 1 }}>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Pago (Hora AR)</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Máquina / Cliente</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Monto & Pulsos</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Hora Poll → Hora ACK</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Espera Poll</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Tiempo Poll → ACK</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Desglose (Relé + Red)</th>
-                <th style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Total (Pago → ACK)</th>
+              <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg)', textAlign: 'left' }}>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Fecha / Hora (AR)</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Máquina / Cliente</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Monto & Pulsos</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>1. Espera Poll</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>2. Pulsos Físicos</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>3. Red ACK</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>Total (Pago → ACK)</th>
+                <th style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--ink-3)' }}>¿Qué causó el tiempo?</th>
               </tr>
             </thead>
             <tbody>
               {pulsesList.length === 0 ? (
                 <tr>
-                  <td colSpan="8" style={{ padding: 20, textAlign: 'center', color: 'var(--ink-4)' }}>
-                    No hay pulsos acreditados en este período.
+                  <td colSpan="8" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-4)' }}>
+                    No hay ventas acreditadas para los filtros actuales.
                   </td>
                 </tr>
               ) : (
                 pulsesList.map((p) => {
-                  const tone = getLatencyTone(p.poll_to_ack_s, p.net_overhead_s);
+                  const reason = getDelayReason(p.queue_to_poll_s, p.physical_s, p.net_overhead_s, p.pulses_count);
+                  const reasonStyle = TONE_STYLES[reason.tone] || TONE_STYLES.neutral;
                   return (
                     <tr key={p.pulse_id} style={{ borderBottom: '1px solid var(--line-2)' }}>
-                      <td style={{ padding: '9px 12px' }} className="mono">
+                      <td style={{ padding: '10px 12px' }} className="mono">
                         <div style={{ fontWeight: 600, color: 'var(--ink-1)' }}>{p.created_at_ar}</div>
-                        <div style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>{p.pulse_id}</div>
+                        <div style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>
+                          Poll {p.delivered_at_ar} → ACK {p.acked_at_ar}
+                        </div>
                       </td>
-                      <td style={{ padding: '9px 12px' }}>
+
+                      <td style={{ padding: '10px 12px' }}>
                         <Link to={`/maquinas/${p.machine_id}`} style={{ fontWeight: 600, color: 'var(--ink-1)', textDecoration: 'none' }}>
                           {p.machine_name}
                         </Link>
                         <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{p.client_name}</div>
                       </td>
-                      <td style={{ padding: '9px 12px' }} className="mono">
-                        <div style={{ fontWeight: 600 }}>{p.amount ? ars(p.amount) : '—'}</div>
-                        <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{p.pulses_count} {p.pulses_count === 1 ? 'pulso' : 'pulsos'}</div>
+
+                      <td style={{ padding: '10px 12px' }} className="mono">
+                        <b>{p.amount ? ars(p.amount) : '—'}</b>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                          {p.pulses_count} {p.pulses_count === 1 ? 'pulso' : 'pulsos'}
+                        </div>
                       </td>
-                      <td style={{ padding: '9px 12px' }} className="mono">
-                        {p.delivered_at_ar} → <b>{p.acked_at_ar}</b>
-                      </td>
-                      <td style={{ padding: '9px 12px', color: p.queue_to_poll_s > 10 ? 'var(--bad)' : 'var(--ink-2)' }} className="mono">
+
+                      <td style={{ padding: '10px 12px', color: p.queue_to_poll_s > 6 ? 'var(--bad)' : 'var(--ink-1)', fontWeight: p.queue_to_poll_s > 6 ? 700 : 400 }} className="mono">
                         {sec(p.queue_to_poll_s)}
                       </td>
-                      <td style={{ padding: '9px 12px' }} className="mono">
+
+                      <td style={{ padding: '10px 12px' }} className="mono">
+                        {sec(p.physical_s)}
+                      </td>
+
+                      <td style={{ padding: '10px 12px', color: p.net_overhead_s > 5 ? 'var(--bad)' : 'var(--ok)', fontWeight: p.net_overhead_s > 5 ? 700 : 600 }} className="mono">
+                        +{sec(p.net_overhead_s)}
+                      </td>
+
+                      <td style={{ padding: '10px 12px', fontWeight: 700, fontSize: 13.5 }} className="mono">
+                        {sec(p.total_s)}
+                      </td>
+
+                      <td style={{ padding: '10px 12px' }}>
                         <span
                           style={{
                             display: 'inline-block',
-                            padding: '2px 7px',
+                            padding: '3px 8px',
                             borderRadius: 4,
-                            fontWeight: 700,
-                            background: tone.bg,
-                            color: tone.fg
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            background: reasonStyle.bg,
+                            color: reasonStyle.fg
                           }}
                         >
-                          {sec(p.poll_to_ack_s)}
+                          {reason.label}
                         </span>
-                      </td>
-                      <td style={{ padding: '9px 12px', fontSize: 11.5 }} className="mono">
-                        <span>{sec(p.physical_s)} relé</span>
-                        <span style={{ color: p.net_overhead_s > 10 ? 'var(--bad)' : 'var(--ink-3)', marginLeft: 6 }}>
-                          +{sec(p.net_overhead_s)} red
-                        </span>
-                      </td>
-                      <td style={{ padding: '9px 12px', fontWeight: 600 }} className="mono">
-                        {sec(p.total_s)}
                       </td>
                     </tr>
                   );
@@ -748,7 +941,7 @@ function PollToAckSection({ latency, trends, onSelectMachine, activeMachineId })
             </tbody>
           </table>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -766,10 +959,7 @@ export default function Monitoreo() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
-  const [searchMachine, setSearchMachine] = useState('');
-  const [filterMode, setFilterMode] = useState('all'); // 'all', 'critical', 'refunds', 'offline'
 
-  // Redirigir a /maquinas si el usuario no es Super Admin
   useEffect(() => {
     if (!isSuperAdmin) {
       navigate('/maquinas', { replace: true });
@@ -798,7 +988,6 @@ export default function Monitoreo() {
     loadMetrics();
   }, [period, selectedClientId, selectedMachineId]);
 
-  // Opciones de clientes y máquinas para los selectores superiores
   const clientOptions = data?.filterOptions?.clients || [];
   const machineOptions = useMemo(() => {
     const all = data?.filterOptions?.machines || [];
@@ -816,31 +1005,6 @@ export default function Monitoreo() {
     }
   };
 
-  // Filtrado local adicional en la tabla de máquinas
-  const filteredMachines = useMemo(() => {
-    if (!data?.byMachine) return [];
-    let list = data.byMachine;
-
-    if (searchMachine.trim()) {
-      const q = searchMachine.toLowerCase();
-      list = list.filter(m =>
-        (m.name && m.name.toLowerCase().includes(q)) ||
-        (m.arduino_id && m.arduino_id.toLowerCase().includes(q)) ||
-        (m.client_name && m.client_name.toLowerCase().includes(q))
-      );
-    }
-
-    if (filterMode === 'critical') {
-      list = list.filter(m => m.pct_reembolso >= 10 && m.total_pagos >= 5);
-    } else if (filterMode === 'refunds') {
-      list = list.filter(m => m.reembolsos_done > 0);
-    } else if (filterMode === 'offline') {
-      list = list.filter(m => m.state === 'offline');
-    }
-
-    return list;
-  }, [data?.byMachine, searchMachine, filterMode]);
-
   const kpis = data?.kpis || {
     total_approved: 0,
     total_approved_amount: 0,
@@ -857,14 +1021,6 @@ export default function Monitoreo() {
     out_of_service_zero_pulses: 0,
   };
 
-  // Cobertura de firmware moderno
-  const modernFwCount = useMemo(() => {
-    if (!data?.firmwareDistribution) return 0;
-    return Object.entries(data.firmwareDistribution)
-      .filter(([ver]) => ver >= '0.0.25')
-      .reduce((acc, [, count]) => acc + count, 0);
-  }, [data?.firmwareDistribution]);
-
   const refundRateColor = kpis.overall_refund_rate > 8
     ? 'var(--bad)'
     : kpis.overall_refund_rate > 3
@@ -880,19 +1036,18 @@ export default function Monitoreo() {
         <Topbar crumbs={['Sistema', 'Monitoreo Red & Reembolsos']} />
 
         <div className="page" data-screen-label="Monitoreo">
-          {/* Header con título y controles de filtro */}
+          {/* Header con selectores de Cliente, Máquina y Período */}
           <div className="page-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
             <div>
               <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ color: 'var(--brand)' }}>{Icon.pulse}</span> Monitoreo de Red, Tiempos Poll → ACK & Reembolsos
+                <span style={{ color: 'var(--brand)' }}>{Icon.pulse}</span> Monitoreo de Ventas, Reembolsos y Demoras
               </h1>
               <div className="page-subtitle">
-                Super Admin · Auditoría de tiempos de acreditación (Poll a ACK), causas de reembolsos y telemetría por cliente y máquina.
+                Filtrá por cliente o máquina para auditar reembolsos y entender qué demora la acreditación en cada equipo.
               </div>
             </div>
 
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              {/* Selector de Cliente */}
               <select
                 value={selectedClientId}
                 onChange={e => handleClientChange(e.target.value)}
@@ -915,7 +1070,6 @@ export default function Monitoreo() {
                 ))}
               </select>
 
-              {/* Selector de Máquina */}
               <select
                 value={selectedMachineId}
                 onChange={e => setSelectedMachineId(e.target.value)}
@@ -953,7 +1107,6 @@ export default function Monitoreo() {
                 </button>
               )}
 
-              {/* Botón selector de período */}
               <div style={{ display: 'inline-flex', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 6, padding: 2 }}>
                 {[
                   { id: 'today', label: 'Hoy' },
@@ -980,7 +1133,6 @@ export default function Monitoreo() {
                 ))}
               </div>
 
-              {/* Botón Refrescar */}
               <button
                 className="btn"
                 onClick={loadMetrics}
@@ -988,9 +1140,6 @@ export default function Monitoreo() {
                 title="Actualizar datos"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
-                <span style={{ display: 'inline-block', transform: loading ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }}>
-                  {Icon.chev}
-                </span>
                 {loading ? 'Cargando…' : 'Refrescar'}
               </button>
             </div>
@@ -1002,435 +1151,66 @@ export default function Monitoreo() {
             </div>
           )}
 
-          {/* Cards de Métricas Principales */}
+          {/* 4 KPIs Ejecutivos */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 16 }}>
-            {/* Tasa Global */}
             <div className="card" style={{ padding: '14px 16px' }}>
-              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                {Icon.pulse} Tasa de Reembolso
-              </div>
-              <div style={{ fontSize: 24, fontWeight: 700, color: refundRateColor, letterSpacing: '-0.02em' }} className="mono">
-                {kpis.overall_refund_rate}%
-              </div>
-              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 4 }}>
-                {kpis.overall_refund_rate > 8 ? '🚨 Tasa Crítica en el período' : kpis.overall_refund_rate > 3 ? '⚠️ Precaución' : '✅ En rango normal'}
-              </div>
-            </div>
-
-            {/* Monto Reembolsado */}
-            <div className="card" style={{ padding: '14px 16px' }}>
-              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                {Icon.card} Monto Reembolsado
-              </div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
-                {ars(kpis.total_refunded_amount)}
-              </div>
-              <div style={{ fontSize: 11.5, color: 'var(--bad)', marginTop: 4 }}>
-                {num(kpis.total_refunded_count)} transacciones canceladas
-              </div>
-            </div>
-
-            {/* Ventas Aprobadas */}
-            <div className="card" style={{ padding: '14px 16px' }}>
-              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                {Icon.chart} Ventas Aprobadas
-              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>Ventas Aprobadas</div>
               <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
                 {ars(kpis.total_approved_amount)}
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--ok)', marginTop: 4 }}>
-                {num(kpis.total_approved)} ventas efectivas
+                <b>{num(kpis.total_approved)}</b> transacciones
               </div>
             </div>
 
-            {/* Tiempo Poll -> ACK Promedio */}
             <div className="card" style={{ padding: '14px 16px' }}>
-              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                {Icon.clock} Tiempo Poll → ACK Prom.
+              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>Tasa de Reembolso</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: refundRateColor }} className="mono">
+                {kpis.overall_refund_rate}%
               </div>
-              <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
-                {sec(data?.latency?.summary?.avg_poll_to_ack_s)}
+              <div style={{ fontSize: 11.5, color: 'var(--bad)', marginTop: 4 }}>
+                {num(kpis.total_refunded_count)} devueltas ({ars(kpis.total_refunded_amount)})
+              </div>
+            </div>
+
+            <div className="card" style={{ padding: '14px 16px' }}>
+              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>Tiempo Total (Pago → ACK)</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
+                {sec(data?.latency?.summary?.avg_total_s)}
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 4 }} className="mono">
-                Red: +{sec(data?.latency?.summary?.avg_net_overhead_s)} · Relé: {sec(data?.latency?.summary?.avg_physical_s)}
+                Poll: {sec(data?.latency?.summary?.avg_queue_to_poll_s)} + Pulsos: {sec(data?.latency?.summary?.avg_physical_s)} + Red: {sec(data?.latency?.summary?.avg_net_overhead_s)}
               </div>
             </div>
 
-            {/* Cobertura FW Nuevo */}
             <div className="card" style={{ padding: '14px 16px' }}>
-              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                {Icon.cog} Cobertura FW Anti-Rollback
+              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 4 }}>Máquinas en Alcance</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: kpis.critical_machines_count > 0 ? 'var(--bad)' : 'var(--ink-1)' }} className="mono">
+                {kpis.total_machines} equipos
               </div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink-1)' }} className="mono">
-                {modernFwCount} / {kpis.total_machines}
-              </div>
-              <div style={{ fontSize: 11.5, color: modernFwCount > 0 ? 'var(--ok)' : 'var(--ink-3)', marginTop: 4 }}>
-                {modernFwCount > 0 ? 'v0.0.25/v0.0.26 con dedup activa' : 'Firmwares legacy en proceso OTA'}
+              <div style={{ fontSize: 11.5, color: kpis.critical_machines_count > 0 ? 'var(--bad)' : 'var(--ok)', marginTop: 4 }}>
+                {kpis.critical_machines_count > 0 ? `${kpis.critical_machines_count} con reembolsos >10%` : 'Sin máquinas en estado crítico'}
               </div>
             </div>
           </div>
 
-          {/* Gráfico de Tendencias Diarias / Horarias */}
-          <div style={{ marginBottom: 16 }}>
-            <DailyTrendsChart trends={data?.dailyTrends || []} period={period} />
-          </div>
-
-          {/* NUEVA SECCIÓN: Tiempos desde Poll hasta el ACK */}
-          <PollToAckSection
-            latency={data?.latency}
+          {/* BLOQUE 1: Gráfico de Ventas vs Reembolsos */}
+          <DailyTrendsChart
             trends={data?.dailyTrends || []}
-            activeMachineId={selectedMachineId}
-            onSelectMachine={(mId) => setSelectedMachineId(mId)}
+            period={period}
+            causes={causes}
           />
 
-          {/* Tarjetas de Desglose de Causas Raíz */}
-          <div className="card" style={{ padding: 18, marginBottom: 16 }}>
-            <div style={{ fontWeight: 600, fontSize: 14.5, marginBottom: 12 }}>
-              Desglose de Causas de Reembolso en el Período
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 14 }}>
-              <div style={{ background: 'var(--bg)', padding: 14, borderRadius: 6, borderLeft: '3px solid var(--bad)' }}>
-                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ink-1)' }}>
-                  Timeout Expirado (Microcortes / Socket Drop)
-                </div>
-                <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }} className="mono">
-                  {causes.timeout_expired}
-                </div>
-                <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 4 }}>
-                  Pulso encolado pero no se recibió ACK antes de la expiración. Mitigado a partir de v0.0.25 con re-entrega automática.
-                </div>
-              </div>
-
-              <div style={{ background: 'var(--bg)', padding: 14, borderRadius: 6, borderLeft: '3px solid var(--warn)' }}>
-                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ink-1)' }}>
-                  Cancelación Manual Posterior a ACK
-                </div>
-                <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }} className="mono">
-                  {causes.manual_after_ack}
-                </div>
-                <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 4 }}>
-                  La máquina acusó recibo del pulso correctamente, pero un operador o cliente solicitó la devolución manual posteriormente.
-                </div>
-              </div>
-
-              <div style={{ background: 'var(--bg)', padding: 14, borderRadius: 6, borderLeft: '3px solid var(--ink-4)' }}>
-                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ink-1)' }}>
-                  Fuera de Servicio / Sin Pulsos
-                </div>
-                <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }} className="mono">
-                  {causes.out_of_service_zero_pulses}
-                </div>
-                <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 4 }}>
-                  Pagos recibidos cuando la máquina no contaba con pulsos calculados o estaba configurada temporalmente fuera de servicio.
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Tabla 1: Reembolsos por Cliente */}
-          <div className="card" style={{ marginBottom: 16, overflow: 'hidden' }}>
-            <div className="card-head">
-              <div>
-                <div className="card-title">Reembolsos y Salud por Cliente</div>
-                <div className="card-sub">Hacé clic en &quot;Filtrar&quot; para ver todo el tablero (gráfico, Poll→ACK y máquinas) de un cliente específico</div>
-              </div>
-            </div>
-
-            <div className="table-wrapper" style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg)', textAlign: 'left' }}>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Cliente</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Máquinas</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Ventas Aprobadas</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Reembolsos</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Monto Reembolsado</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Tasa (%)</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Acción</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(!data?.byClient || data.byClient.length === 0) ? (
-                    <tr>
-                      <td colSpan="7" style={{ padding: 20, textAlign: 'center', color: 'var(--ink-4)' }}>
-                        No hay registros en el período
-                      </td>
-                    </tr>
-                  ) : (
-                    data.byClient.map((c, i) => {
-                      const pct = Number(c.pct_reembolso || 0);
-                      const isHigh = pct >= 8;
-                      const isMedium = pct >= 3 && pct < 8;
-                      const isClientSelected = selectedClientId === c.client_id;
-                      return (
-                        <tr key={i} style={{ borderBottom: '1px solid var(--line-2)', background: isClientSelected ? 'var(--tint)' : 'transparent' }}>
-                          <td style={{ padding: '12px 14px', fontWeight: 600, color: 'var(--ink-1)' }}>
-                            <Link to={`/clientes/${c.client_id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                              {c.client_name}
-                            </Link>
-                          </td>
-                          <td style={{ padding: '12px 14px', color: 'var(--ink-2)' }}>
-                            {c.maquinas_activas}
-                          </td>
-                          <td style={{ padding: '12px 14px', color: 'var(--ink-1)' }} className="mono">
-                            {num(c.total_pagos)}
-                          </td>
-                          <td style={{ padding: '12px 14px', color: c.reembolsos_done > 0 ? 'var(--bad)' : 'var(--ink-3)', fontWeight: c.reembolsos_done > 0 ? 600 : 400 }} className="mono">
-                            {num(c.reembolsos_done)}
-                          </td>
-                          <td style={{ padding: '12px 14px', color: 'var(--ink-2)' }} className="mono">
-                            {ars(c.monto_reembolsado)}
-                          </td>
-                          <td style={{ padding: '12px 14px' }}>
-                            <span
-                              style={{
-                                display: 'inline-block',
-                                padding: '2px 8px',
-                                borderRadius: 4,
-                                fontSize: 11.5,
-                                fontWeight: 600,
-                                background: isHigh ? 'var(--bad-soft)' : isMedium ? 'var(--warn-soft)' : 'var(--ok-soft)',
-                                color: isHigh ? 'var(--bad)' : isMedium ? 'var(--warn)' : 'var(--ok)'
-                              }}
-                              className="mono"
-                            >
-                              {pct}%
-                            </span>
-                          </td>
-                          <td style={{ padding: '12px 14px' }}>
-                            <button
-                              onClick={() => handleClientChange(isClientSelected ? '' : c.client_id)}
-                              style={{
-                                padding: '3px 9px',
-                                fontSize: 11.5,
-                                borderRadius: 4,
-                                border: '1px solid var(--line)',
-                                background: isClientSelected ? 'var(--brand)' : 'var(--panel)',
-                                color: isClientSelected ? '#fff' : 'var(--ink-2)',
-                                cursor: 'pointer',
-                                fontWeight: isClientSelected ? 600 : 400
-                              }}
-                            >
-                              {isClientSelected ? 'Filtrando ✓' : 'Filtrar cliente'}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Tabla 2: Salud y Reembolsos por Máquina */}
-          <div className="card" style={{ overflow: 'hidden' }}>
-            <div className="card-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-              <div>
-                <div className="card-title">Telemetría y Salud por Máquina</div>
-                <div className="card-sub">Diagnóstico individual por placa física, versión de firmware, tiempo Poll → ACK y ratio de fallas</div>
-              </div>
-
-              {/* Filtros de Máquinas */}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  type="text"
-                  placeholder="Buscar máquina, arduino o cliente…"
-                  value={searchMachine}
-                  onChange={e => setSearchMachine(e.target.value)}
-                  style={{
-                    padding: '6px 12px',
-                    fontSize: 12.5,
-                    border: '1px solid var(--line)',
-                    borderRadius: 6,
-                    background: 'var(--panel)',
-                    color: 'var(--ink-1)',
-                    width: 220
-                  }}
-                />
-
-                <select
-                  value={filterMode}
-                  onChange={e => setFilterMode(e.target.value)}
-                  style={{
-                    padding: '6px 10px',
-                    fontSize: 12.5,
-                    border: '1px solid var(--line)',
-                    borderRadius: 6,
-                    background: 'var(--panel)',
-                    color: 'var(--ink-1)',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <option value="all">Todas ({data?.byMachine?.length || 0})</option>
-                  <option value="critical">Críticas (&gt;10%)</option>
-                  <option value="refunds">Con Reembolsos</option>
-                  <option value="offline">Offline</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="table-wrapper" style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg)', textAlign: 'left' }}>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Máquina</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Cliente</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Firmware</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Estado & Conectividad</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Poll → ACK Prom.</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Ventas</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Reembolsos</th>
-                    <th style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--ink-3)' }}>Tasa (%)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredMachines.length === 0 ? (
-                    <tr>
-                      <td colSpan="8" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-4)' }}>
-                        No se encontraron máquinas con los filtros actuales.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredMachines.map((m) => {
-                      const pct = Number(m.pct_reembolso || 0);
-                      const isCritical = pct >= 10 && m.total_pagos >= 5;
-                      const isWarning = pct >= 5 && !isCritical;
-                      const isFwModern = (m.firmware_version || '') >= '0.0.25';
-
-                      return (
-                        <tr key={m.id} style={{ borderBottom: '1px solid var(--line-2)' }}>
-                          <td style={{ padding: '12px 14px' }}>
-                            <Link to={`/maquinas/${m.id}`} style={{ textDecoration: 'none', color: 'inherit', fontWeight: 600 }}>
-                              {m.name}
-                            </Link>
-                            <div style={{ fontSize: 11, color: 'var(--ink-4)', fontFamily: 'monospace' }}>
-                              {m.arduino_id}
-                            </div>
-                          </td>
-
-                          <td style={{ padding: '12px 14px', color: 'var(--ink-2)' }}>
-                            {m.client_name}
-                          </td>
-
-                          <td style={{ padding: '12px 14px' }}>
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                              <span
-                                style={{
-                                  padding: '2px 6px',
-                                  borderRadius: 4,
-                                  fontSize: 11,
-                                  fontFamily: 'monospace',
-                                  background: isFwModern ? 'var(--ok-soft)' : 'var(--tint)',
-                                  color: isFwModern ? 'var(--ok)' : 'var(--ink-3)',
-                                  fontWeight: 600
-                                }}
-                              >
-                                v{m.firmware_version}
-                              </span>
-                              {m.target_fw_version && (
-                                <span
-                                  style={{
-                                    padding: '2px 5px',
-                                    borderRadius: 4,
-                                    fontSize: 10,
-                                    background: 'var(--info-soft)',
-                                    color: 'var(--info)'
-                                  }}
-                                  title={`Actualización pendiente a ${m.target_fw_version}`}
-                                >
-                                  OTA → v{m.target_fw_version}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-
-                          <td style={{ padding: '12px 14px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span
-                                style={{
-                                  width: 8,
-                                  height: 8,
-                                  borderRadius: '50%',
-                                  background: m.state === 'online' ? 'var(--ok)' : m.state === 'out_of_service' ? 'var(--warn)' : 'var(--bad)',
-                                  display: 'inline-block'
-                                }}
-                              />
-                              <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>
-                                {m.state === 'online' ? 'Online' : m.state === 'out_of_service' ? 'Fuera de servicio' : 'Desconectada'}
-                              </span>
-                              <span
-                                style={{
-                                  fontSize: 11,
-                                  color: 'var(--ink-4)',
-                                  padding: '1px 5px',
-                                  borderRadius: 3,
-                                  background: 'var(--line-2)'
-                                }}
-                                title="Señal WiFi"
-                              >
-                                {m.rssi ? `${m.rssi} dBm` : '—'}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: 11, color: 'var(--ink-4)', marginTop: 2 }}>
-                              Visto: {timeAgo(m.last_seen_at)}
-                            </div>
-                          </td>
-
-                          <td style={{ padding: '12px 14px' }} className="mono">
-                            {m.avg_poll_to_ack_s != null ? (
-                              <>
-                                <b>{sec(m.avg_poll_to_ack_s)}</b>
-                                <div style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>
-                                  Poll: {sec(m.avg_queue_to_poll_s)}
-                                </div>
-                              </>
-                            ) : (
-                              <span style={{ color: 'var(--ink-4)' }}>—</span>
-                            )}
-                          </td>
-
-                          <td style={{ padding: '12px 14px', color: 'var(--ink-1)' }} className="mono">
-                            {num(m.total_pagos)}
-                            <div style={{ fontSize: 11, color: 'var(--ink-4)' }}>
-                              {ars(m.monto_aprobado)}
-                            </div>
-                          </td>
-
-                          <td style={{ padding: '12px 14px', color: m.reembolsos_done > 0 ? 'var(--bad)' : 'var(--ink-4)', fontWeight: m.reembolsos_done > 0 ? 600 : 400 }} className="mono">
-                            {num(m.reembolsos_done)}
-                            {m.monto_reembolsado > 0 && (
-                              <div style={{ fontSize: 11, color: 'var(--bad)' }}>
-                                {ars(m.monto_reembolsado)}
-                              </div>
-                            )}
-                          </td>
-
-                          <td style={{ padding: '12px 14px' }}>
-                            <span
-                              style={{
-                                display: 'inline-block',
-                                padding: '3px 8px',
-                                borderRadius: 4,
-                                fontSize: 12,
-                                fontWeight: 600,
-                                background: isCritical ? 'var(--bad-soft)' : isWarning ? 'var(--warn-soft)' : 'var(--ok-soft)',
-                                color: isCritical ? 'var(--bad)' : isWarning ? 'var(--warn)' : 'var(--ok)'
-                              }}
-                              className="mono"
-                            >
-                              {pct}%
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
+          {/* BLOQUE 2: Esquema de Demoras (Pago -> Poll -> ACK) + Tabla por Cliente / Máquina / Ventas */}
+          <AccreditationDelaysSection
+            latency={data?.latency}
+            byClient={data?.byClient || []}
+            byMachine={data?.byMachine || []}
+            selectedClientId={selectedClientId}
+            selectedMachineId={selectedMachineId}
+            onSelectClient={handleClientChange}
+            onSelectMachine={(mId) => setSelectedMachineId(mId)}
+          />
         </div>
       </div>
     </div>

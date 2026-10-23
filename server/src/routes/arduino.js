@@ -107,6 +107,7 @@ router.get('/poll/:arduinoId', async (req, res) => {
     await db.prepare(`
       UPDATE pulse_queue 
       SET status = 'delivered', 
+          first_delivered_at = COALESCE(first_delivered_at, datetime('now')),
           delivered_at = datetime('now'),
           expires_at = datetime('now', '+90 seconds')
       WHERE id IN (${ids.map(() => '?').join(',')})
