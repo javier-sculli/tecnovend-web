@@ -399,7 +399,11 @@ router.get('/superadmin-monitoring', async (req, res) => {
         ROUND(AVG(${pollToAckExpr})::numeric, 2) as avg_poll_to_ack_s,
         ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${pollToAckExpr})::numeric, 2) as p50_poll_to_ack_s,
         ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ${pollToAckExpr})::numeric, 2) as p95_poll_to_ack_s,
-        ROUND(AVG(${queueToPollExpr})::numeric, 2) as avg_queue_to_poll_s
+        ROUND(AVG(${queueToPollExpr})::numeric, 2) as avg_queue_to_poll_s,
+        ROUND(AVG(${physSecExpr})::numeric, 2) as avg_physical_s,
+        ROUND(AVG(${netOverheadExpr})::numeric, 2) as avg_net_overhead_s,
+        ROUND(AVG(EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at)))::numeric, 2) as avg_total_s,
+        ROUND(MAX(EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at)))::numeric, 2) as max_total_s
       FROM pulse_queue pq
       JOIN machines m ON m.id = pq.machine_id
       WHERE pq.status = 'acked'
@@ -409,6 +413,32 @@ router.get('/superadmin-monitoring', async (req, res) => {
         AND pq.created_at >= ${sinceUtcSql}
         ${scopeM.sql}
       GROUP BY 1
+      ORDER BY 1 ASC
+    `).all(...scopeM.params);
+
+    const dailyLatencyByMachinePromise = db.prepare(`
+      SELECT 
+        TO_CHAR(DATE_TRUNC('${truncUnit}', pq.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires'), '${fmtMask}') as bucket_key,
+        m.id as machine_id,
+        m.name as machine_name,
+        COALESCE(c.name, 'Sin cliente') as client_name,
+        COUNT(*) as acked_count,
+        ROUND(AVG(${queueToPollExpr})::numeric, 2) as avg_queue_to_poll_s,
+        ROUND(AVG(${physSecExpr})::numeric, 2) as avg_physical_s,
+        ROUND(AVG(${netOverheadExpr})::numeric, 2) as avg_net_overhead_s,
+        ROUND(AVG(${pollToAckExpr})::numeric, 2) as avg_poll_to_ack_s,
+        ROUND(AVG(EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at)))::numeric, 2) as avg_total_s,
+        ROUND(MAX(EXTRACT(EPOCH FROM (pq.acked_at - pq.created_at)))::numeric, 2) as max_total_s
+      FROM pulse_queue pq
+      JOIN machines m ON m.id = pq.machine_id
+      LEFT JOIN clients c ON c.id = m.client_id
+      WHERE pq.status = 'acked'
+        AND pq.delivered_at IS NOT NULL
+        AND pq.acked_at IS NOT NULL
+        AND pq.acked_at >= ${pollTsExpr}
+        AND pq.created_at >= ${sinceUtcSql}
+        ${scopeM.sql}
+      GROUP BY 1, m.id, m.name, c.name
       ORDER BY 1 ASC
     `).all(...scopeM.params);
 
@@ -619,6 +649,7 @@ router.get('/superadmin-monitoring', async (req, res) => {
     const [
       dailyPaymentsRaw,
       dailyLatencyRaw,
+      dailyLatencyByMachineRaw,
       allClients,
       allMachines,
       clientsRes,
@@ -632,6 +663,7 @@ router.get('/superadmin-monitoring', async (req, res) => {
     ] = await Promise.all([
       dailyPaymentsPromise,
       dailyLatencyPromise,
+      dailyLatencyByMachinePromise,
       allClientsPromise,
       allMachinesPromise,
       clientsResPromise,
@@ -652,6 +684,25 @@ router.get('/superadmin-monitoring', async (req, res) => {
     const latMap = {};
     for (const r of dailyLatencyRaw) {
       latMap[r.bucket_key] = r;
+    }
+    const latByMachineMap = {};
+    for (const r of dailyLatencyByMachineRaw) {
+      if (!latByMachineMap[r.bucket_key]) latByMachineMap[r.bucket_key] = [];
+      latByMachineMap[r.bucket_key].push({
+        machine_id: r.machine_id,
+        machine_name: r.machine_name,
+        client_name: r.client_name,
+        acked_count: Number(r.acked_count || 0),
+        avg_queue_to_poll_s: Number(r.avg_queue_to_poll_s || 0),
+        avg_physical_s: Number(r.avg_physical_s || 0),
+        avg_net_overhead_s: Number(r.avg_net_overhead_s || 0),
+        avg_poll_to_ack_s: Number(r.avg_poll_to_ack_s || 0),
+        avg_total_s: Number(r.avg_total_s || 0),
+        max_total_s: Number(r.max_total_s || 0),
+      });
+    }
+    for (const k of Object.keys(latByMachineMap)) {
+      latByMachineMap[k].sort((a, b) => b.avg_total_s - a.avg_total_s);
     }
 
     const nowArStr = getLocalDateString(new Date(), false); // YYYY-MM-DD en Argentina
@@ -695,6 +746,11 @@ router.get('/superadmin-monitoring', async (req, res) => {
           p50_poll_to_ack_s: Number(lRow.p50_poll_to_ack_s || 0),
           p95_poll_to_ack_s: Number(lRow.p95_poll_to_ack_s || 0),
           avg_queue_to_poll_s: Number(lRow.avg_queue_to_poll_s || 0),
+          avg_physical_s: Number(lRow.avg_physical_s || 0),
+          avg_net_overhead_s: Number(lRow.avg_net_overhead_s || 0),
+          avg_total_s: Number(lRow.avg_total_s || 0),
+          max_total_s: Number(lRow.max_total_s || 0),
+          by_machine: latByMachineMap[key] || [],
         });
       }
     } else {
@@ -729,6 +785,11 @@ router.get('/superadmin-monitoring', async (req, res) => {
           p50_poll_to_ack_s: Number(lRow.p50_poll_to_ack_s || 0),
           p95_poll_to_ack_s: Number(lRow.p95_poll_to_ack_s || 0),
           avg_queue_to_poll_s: Number(lRow.avg_queue_to_poll_s || 0),
+          avg_physical_s: Number(lRow.avg_physical_s || 0),
+          avg_net_overhead_s: Number(lRow.avg_net_overhead_s || 0),
+          avg_total_s: Number(lRow.avg_total_s || 0),
+          max_total_s: Number(lRow.max_total_s || 0),
+          by_machine: latByMachineMap[key] || [],
         });
       }
     }

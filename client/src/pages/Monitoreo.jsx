@@ -328,9 +328,511 @@ function DailyTrendsChart({ trends, period, causes }) {
 }
 
 /* ============================================================
+   2A. Gráfico de Evolución Temporal de Demoras + Línea de Tiempo por Máquina
+   ============================================================ */
+function LatencyTrendsChart({ trends, period, byMachine }) {
+  const [hoverIndex, setHoverIndex] = useState(null);
+  const [chartMachineId, setChartMachineId] = useState('ALL');
+  const [showAllMachinesMatrix, setShowAllMachinesMatrix] = useState(false);
+
+  // Lista de máquinas con ventas acreditadas en el período, ordenadas por mayor demora
+  const activeMachines = useMemo(() => {
+    return (byMachine || [])
+      .filter(m => Number(m.total_acked || 0) > 0)
+      .sort((a, b) => Number(b.avg_total_s || 0) - Number(a.avg_total_s || 0));
+  }, [byMachine]);
+
+  // Si la máquina elegida en las píldoras del gráfico ya no está en el alcance, volver a ALL
+  useEffect(() => {
+    if (chartMachineId !== 'ALL' && !activeMachines.some(m => String(m.id) === String(chartMachineId))) {
+      setChartMachineId('ALL');
+    }
+  }, [activeMachines, chartMachineId]);
+
+  // Serie temporal adaptada según si se está viendo "Todas" o una máquina puntual
+  const series = useMemo(() => {
+    if (!trends || trends.length === 0) return [];
+    return trends.map(d => {
+      if (chartMachineId === 'ALL') {
+        const pollS = Number(d.avg_queue_to_poll_s || 0);
+        const physS = Number(d.avg_physical_s || 0);
+        const netS = Number(d.avg_net_overhead_s || 0);
+        const totalS = Number(d.avg_total_s || (pollS + physS + netS) || 0);
+        return {
+          ...d,
+          cur_acked: Number(d.acked_count || 0),
+          cur_poll_s: pollS,
+          cur_phys_s: physS,
+          cur_net_s: netS,
+          cur_total_s: totalS,
+          cur_max_s: Number(d.max_total_s || totalS),
+        };
+      } else {
+        const mEntry = (d.by_machine || []).find(m => String(m.machine_id) === String(chartMachineId));
+        if (!mEntry) {
+          return {
+            ...d,
+            cur_acked: 0,
+            cur_poll_s: 0,
+            cur_phys_s: 0,
+            cur_net_s: 0,
+            cur_total_s: 0,
+            cur_max_s: 0,
+          };
+        }
+        return {
+          ...d,
+          cur_acked: Number(mEntry.acked_count || 0),
+          cur_poll_s: Number(mEntry.avg_queue_to_poll_s || 0),
+          cur_phys_s: Number(mEntry.avg_physical_s || 0),
+          cur_net_s: Number(mEntry.avg_net_overhead_s || 0),
+          cur_total_s: Number(mEntry.avg_total_s || 0),
+          cur_max_s: Number(mEntry.max_total_s || 0),
+        };
+      }
+    });
+  }, [trends, chartMachineId]);
+
+  if (!series || series.length === 0) return null;
+
+  const isHourly = period === 'today' || period === '24h';
+  const periodLabel = period === 'today' ? 'Hoy (hora a hora)' : period === '24h' ? 'Últimas 24hs (hora a hora)' : `Últimos ${trends.length} días`;
+
+  const W = 820;
+  const H = 195;
+  const padL = 42;
+  const padR = 24;
+  const padT = 22;
+  const padB = 34;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+
+  const maxSecRaw = Math.max(...series.map(d => d.cur_total_s), 12);
+  const maxSec = Math.ceil(maxSecRaw / 5) * 5;
+  const stepX = chartW / Math.max(series.length, 1);
+  const barW = Math.min(Math.max(stepX * 0.56, 8), 34);
+
+  // Línea de referencia de 10s
+  const refSec = 10;
+  const refY = padT + chartH * (1 - Math.min(refSec / maxSec, 1));
+
+  const visibleMachinesMatrix = showAllMachinesMatrix ? activeMachines : activeMachines.slice(0, 8);
+
+  return (
+    <div
+      style={{
+        background: 'var(--bg)',
+        border: '1px solid var(--line)',
+        borderRadius: 8,
+        padding: 16,
+        marginBottom: 18,
+        position: 'relative',
+      }}
+    >
+      {/* Encabezado del gráfico temporal + Píldoras para aislar máquina */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--ink-1)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            Evolución Temporal de Tiempos ({periodLabel})
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 2 }}>
+            Barras apiladas con las 3 etapas a lo largo del tiempo. Tocá cualquier máquina para ver su curva individual o mirá el semáforo horario abajo.
+          </div>
+        </div>
+
+        {/* Leyenda de los 3 colores (coinciden con las cards de arriba) */}
+        <div style={{ display: 'flex', gap: 12, fontSize: 11.5, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: '#f59e0b' }} />
+            1. Espera Poll
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: '#64748b' }} />
+            2A. Pulsos Físicos
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: '#ef4444' }} />
+            2B. Red / Reconexión ACK
+          </span>
+        </div>
+      </div>
+
+      {/* Píldoras rápidas de máquinas para filtrar las barras en 1 clic */}
+      {activeMachines.length > 1 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-3)', marginRight: 2 }}>Ver curva de:</span>
+          <button
+            onClick={() => setChartMachineId('ALL')}
+            style={{
+              padding: '3px 9px',
+              fontSize: 11.5,
+              borderRadius: 999,
+              border: chartMachineId === 'ALL' ? '1.5px solid var(--brand)' : '1px solid var(--line)',
+              background: chartMachineId === 'ALL' ? 'var(--brand)' : 'var(--panel)',
+              color: chartMachineId === 'ALL' ? '#fff' : 'var(--ink-2)',
+              fontWeight: chartMachineId === 'ALL' ? 600 : 400,
+              cursor: 'pointer',
+            }}
+          >
+            Todas (Promedio)
+          </button>
+          {activeMachines.slice(0, 10).map(m => {
+            const isSelected = String(chartMachineId) === String(m.id);
+            const dotColor = m.avg_total_s > 15 ? 'var(--bad)' : m.avg_total_s > 8 ? 'var(--warn)' : 'var(--ok)';
+            return (
+              <button
+                key={m.id}
+                onClick={() => setChartMachineId(isSelected ? 'ALL' : String(m.id))}
+                style={{
+                  padding: '3px 9px',
+                  fontSize: 11.5,
+                  borderRadius: 999,
+                  border: isSelected ? '1.5px solid var(--brand)' : '1px solid var(--line)',
+                  background: isSelected ? 'var(--brand)' : 'var(--panel)',
+                  color: isSelected ? '#fff' : 'var(--ink-1)',
+                  fontWeight: isSelected ? 600 : 500,
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                }}
+              >
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: isSelected ? '#fff' : dotColor }} />
+                <span>{m.name}</span>
+                <span className="mono" style={{ opacity: 0.85, fontSize: 11 }}>({sec(m.avg_total_s)})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* SVG de Barras Apiladas en el Tiempo */}
+      <div style={{ width: '100%', overflowX: 'auto', background: 'var(--panel)', borderRadius: 6, border: '1px solid var(--line-2)', padding: '6px 4px 2px 4px' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', minWidth: 580, height: 'auto', display: 'block' }}>
+          {/* Grilla horizontal (segundos) */}
+          {[0, 0.25, 0.5, 0.75, 1].map((t, idx) => {
+            const y = padT + chartH * (1 - t);
+            const valSec = Math.round(maxSec * t);
+            return (
+              <g key={idx}>
+                <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="var(--line-2)" strokeDasharray="3 3" />
+                <text x={padL - 6} y={y + 4} textAnchor="end" fontSize="10" fill="var(--ink-3)" className="mono">
+                  {valSec}s
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Línea de referencia 10s */}
+          {maxSec >= 12 && (
+            <g>
+              <line x1={padL} y1={refY} x2={W - padR} y2={refY} stroke="var(--warn)" strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
+              <text x={W - padR - 2} y={refY - 4} textAnchor="end" fontSize="9.5" fill="var(--warn)" fontWeight="600">
+                Umbral alerta (10s)
+              </text>
+            </g>
+          )}
+
+          {/* Barras apiladas por hora / día */}
+          {series.map((d, i) => {
+            const xCenter = padL + i * stepX + stepX * 0.5;
+            const barX = xCenter - barW / 2;
+
+            const pollH = (d.cur_poll_s / maxSec) * chartH;
+            const physH = (d.cur_phys_s / maxSec) * chartH;
+            const netH = (d.cur_net_s / maxSec) * chartH;
+            const totalH = pollH + physH + netH;
+
+            const yPoll = padT + chartH - pollH;
+            const yPhys = yPoll - physH;
+            const yNet = yPhys - netH;
+
+            const isHovered = hoverIndex === i;
+            const showEvery = series.length > 20 ? 3 : series.length > 12 ? 2 : 1;
+            const showLabel = i % showEvery === 0 || i === series.length - 1;
+
+            const totalColor = d.cur_total_s > 15 ? 'var(--bad)' : d.cur_total_s > 8 ? 'var(--warn)' : 'var(--ok)';
+
+            return (
+              <g
+                key={d.bucket_key || i}
+                onMouseEnter={() => setHoverIndex(i)}
+                onMouseLeave={() => setHoverIndex(null)}
+                style={{ cursor: 'pointer' }}
+              >
+                <rect
+                  x={padL + i * stepX}
+                  y={padT}
+                  width={stepX}
+                  height={chartH}
+                  fill={isHovered ? 'var(--line-2)' : 'transparent'}
+                  opacity={0.45}
+                />
+
+                {d.cur_acked > 0 && (
+                  <>
+                    {/* 1. Espera de Poll (abajo, ámbar) */}
+                    {pollH > 0 && (
+                      <rect x={barX} y={yPoll} width={barW} height={Math.max(pollH, 1.5)} fill="#f59e0b" rx={1.5} />
+                    )}
+                    {/* 2A. Pulsos físicos (medio, gris azulado) */}
+                    {physH > 0 && (
+                      <rect x={barX} y={yPhys} width={barW} height={Math.max(physH, 1.5)} fill="#64748b" rx={1.5} />
+                    )}
+                    {/* 2B. Red / Reconexión ACK (arriba, rojo) */}
+                    {netH > 0 && (
+                      <rect x={barX} y={yNet} width={barW} height={Math.max(netH, 1.5)} fill="#ef4444" rx={1.5} />
+                    )}
+
+                    {/* Etiqueta de segundos arriba de la barra */}
+                    {(isHovered || series.length <= 16 || d.cur_total_s > 10) && (
+                      <text
+                        x={xCenter}
+                        y={Math.max(padT + 10, padT + chartH - totalH - 5)}
+                        textAnchor="middle"
+                        fontSize="9.5"
+                        fontWeight="700"
+                        fill={totalColor}
+                        className="mono"
+                      >
+                        {d.cur_total_s.toFixed(1)}s
+                      </text>
+                    )}
+                  </>
+                )}
+
+                {showLabel && (
+                  <text
+                    x={xCenter}
+                    y={H - 10}
+                    textAnchor="middle"
+                    fontSize="10"
+                    fontWeight={d.is_today && !isHourly ? '700' : '500'}
+                    fill={d.is_today && !isHourly ? 'var(--brand)' : 'var(--ink-3)'}
+                    className="mono"
+                  >
+                    {d.dia}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* Tooltip flotante con desglose de la hora/día y ranking de máquinas en ese bloque */}
+      {hoverIndex !== null && series[hoverIndex] && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 14,
+            right: 16,
+            background: 'var(--panel)',
+            border: '1px solid var(--line)',
+            boxShadow: '0 6px 18px rgba(0,0,0,0.12)',
+            borderRadius: 6,
+            padding: '10px 12px',
+            fontSize: 11.5,
+            zIndex: 20,
+            pointerEvents: 'none',
+            minWidth: 230,
+          }}
+        >
+          <div style={{ fontWeight: 700, borderBottom: '1px solid var(--line-2)', paddingBottom: 4, marginBottom: 6, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+            <span>{series[hoverIndex].dia_full || series[hoverIndex].dia}</span>
+            <span className="mono" style={{ color: 'var(--ink-3)' }}>{series[hoverIndex].cur_acked} ventas</span>
+          </div>
+          {series[hoverIndex].cur_acked === 0 ? (
+            <div style={{ color: 'var(--ink-3)' }}>Sin ventas acreditadas en este bloque</div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                <span style={{ color: '#d97706', fontWeight: 600 }}>1. Espera Poll:</span>
+                <b className="mono">{sec(series[hoverIndex].cur_poll_s)}</b>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                <span style={{ color: '#475569', fontWeight: 600 }}>2A. Pulsos Físicos:</span>
+                <b className="mono">{sec(series[hoverIndex].cur_phys_s)}</b>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                <span style={{ color: '#dc2626', fontWeight: 600 }}>2B. Red en ACK:</span>
+                <b className="mono">+{sec(series[hoverIndex].cur_net_s)}</b>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 4, borderTop: '1px dashed var(--line)', fontWeight: 700 }}>
+                <span>Total Promedio (Máx {sec(series[hoverIndex].cur_max_s)}):</span>
+                <span className="mono">{sec(series[hoverIndex].cur_total_s)}</span>
+              </div>
+
+              {/* Si está viendo Todas, mostrar qué máquinas operaron en esa hora/día */}
+              {chartMachineId === 'ALL' && series[hoverIndex].by_machine && series[hoverIndex].by_machine.length > 0 && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--line-2)' }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--ink-3)', marginBottom: 3, textTransform: 'uppercase' }}>
+                    Máquinas en este horario:
+                  </div>
+                  {series[hoverIndex].by_machine.slice(0, 5).map(m => {
+                    const c = m.avg_total_s > 15 ? 'var(--bad)' : m.avg_total_s > 8 ? 'var(--warn)' : 'var(--ok)';
+                    return (
+                      <div key={m.machine_id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, marginTop: 2 }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 145 }}>
+                          {m.machine_name} <span style={{ color: 'var(--ink-3)', fontSize: 10 }}>({m.acked_count})</span>
+                        </span>
+                        <b className="mono" style={{ color: c }}>{sec(m.avg_total_s)}</b>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* SEMÁFORO TEMPORAL POR MÁQUINA: Permite ver de un vistazo si una máquina sigue lenta ahora o fue algo puntual de antes */}
+      {activeMachines.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-2)' }}>
+              Comparativa Temporal por Máquina (izquierda = antes → derecha = más reciente / ahora):
+            </div>
+            <div style={{ display: 'flex', gap: 10, fontSize: 11, color: 'var(--ink-3)' }}>
+              <span><b style={{ color: 'var(--ok)' }}>● ≤8s</b> Rápido</span>
+              <span><b style={{ color: 'var(--warn)' }}>● 8–15s</b> Lento</span>
+              <span><b style={{ color: 'var(--bad)' }}>● &gt;15s</b> Demora alta</span>
+            </div>
+          </div>
+
+          <div
+            className="table-wrapper"
+            tabIndex={0}
+            role="region"
+            aria-label="Evolución temporal de demoras por máquina"
+            style={{ background: 'var(--panel)', border: '1px solid var(--line-2)', borderRadius: 6, overflowX: 'auto' }}
+          >
+            <table className="table" style={{ fontSize: 11.5, margin: 0 }}>
+              <thead>
+                <tr>
+                  <th style={{ position: 'sticky', left: 0, background: 'var(--panel)', zIndex: 2, minWidth: 150, padding: '6px 10px' }}>
+                    Máquina
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '6px 8px', minWidth: 68 }}>Prom.</th>
+                  {series.map((d, idx) => (
+                    <th
+                      key={d.bucket_key || idx}
+                      style={{
+                        textAlign: 'center',
+                        padding: '6px 4px',
+                        minWidth: 46,
+                        fontWeight: idx === series.length - 1 ? 700 : 500,
+                        color: idx === series.length - 1 ? 'var(--brand)' : 'var(--ink-3)',
+                        background: idx === series.length - 1 ? 'rgba(37, 99, 235, 0.05)' : 'transparent',
+                      }}
+                      className="mono"
+                    >
+                      {d.dia}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleMachinesMatrix.map(m => {
+                  const isSelected = String(chartMachineId) === String(m.id);
+                  const avgColor = m.avg_total_s > 15 ? 'var(--bad)' : m.avg_total_s > 8 ? 'var(--warn)' : 'var(--ok)';
+                  return (
+                    <tr
+                      key={m.id}
+                      onClick={() => setChartMachineId(isSelected ? 'ALL' : String(m.id))}
+                      style={{
+                        cursor: 'pointer',
+                        background: isSelected ? 'rgba(37, 99, 235, 0.06)' : 'transparent',
+                      }}
+                      title="Clic para ver esta máquina en el gráfico de barras de arriba"
+                    >
+                      <td style={{ position: 'sticky', left: 0, background: isSelected ? '#eef4ff' : 'var(--panel)', zIndex: 1, padding: '6px 10px', fontWeight: 600 }}>
+                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 165 }}>
+                          {m.name}
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--ink-3)', fontWeight: 400 }}>
+                          {m.client_name}
+                        </div>
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, color: avgColor }} className="mono">
+                        {sec(m.avg_total_s)}
+                      </td>
+                      {series.map((d, idx) => {
+                        const cell = (d.by_machine || []).find(bm => String(bm.machine_id) === String(m.id));
+                        if (!cell || !cell.acked_count) {
+                          return (
+                            <td
+                              key={d.bucket_key || idx}
+                              style={{
+                                textAlign: 'center',
+                                padding: '5px 3px',
+                                color: 'var(--line)',
+                                background: idx === series.length - 1 ? 'rgba(37, 99, 235, 0.03)' : 'transparent',
+                              }}
+                              className="mono"
+                            >
+                              ·
+                            </td>
+                          );
+                        }
+                        const val = Number(cell.avg_total_s || 0);
+                        const bg = val > 15 ? 'rgba(239, 68, 68, 0.14)' : val > 8 ? 'rgba(245, 158, 11, 0.14)' : 'rgba(16, 185, 129, 0.12)';
+                        const fg = val > 15 ? 'var(--bad)' : val > 8 ? '#b45309' : 'var(--ok)';
+                        return (
+                          <td
+                            key={d.bucket_key || idx}
+                            title={`${m.name} (${d.dia_full || d.dia})\nTotal: ${val.toFixed(1)}s (${cell.acked_count} ventas)\n• 1. Espera Poll: ${cell.avg_queue_to_poll_s}s\n• 2A. Pulsos Físicos: ${cell.avg_physical_s}s\n• 2B. Red ACK: +${cell.avg_net_overhead_s}s`}
+                            style={{
+                              textAlign: 'center',
+                              padding: '5px 3px',
+                              background: bg,
+                              color: fg,
+                              fontWeight: val > 8 ? 700 : 600,
+                              borderRadius: 3,
+                            }}
+                            className="mono"
+                          >
+                            {val.toFixed(1)}s
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {activeMachines.length > 8 && (
+            <div style={{ marginTop: 6, textAlign: 'right' }}>
+              <button
+                onClick={() => setShowAllMachinesMatrix(v => !v)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--brand)',
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {showAllMachinesMatrix ? 'Mostrar menos máquinas ▲' : `Ver las ${activeMachines.length} máquinas en la línea de tiempo ▼`}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    2. Sección Simplificada: Esquema de Demoras y Diagnóstico
    ============================================================ */
 function AccreditationDelaysSection({
+  trends,
+  period,
   latency,
   byClient,
   byMachine,
@@ -501,6 +1003,13 @@ function AccreditationDelaysSection({
           </div>
         </div>
       </div>
+
+      {/* GRÁFICO DE EVOLUCIÓN TEMPORAL DE DEMORAS + LÍNEA DE TIEMPO POR MÁQUINA */}
+      <LatencyTrendsChart
+        trends={trends}
+        period={period}
+        byMachine={byMachine}
+      />
 
       {/* Barra de Navegación de Pestañas (Por Cliente | Por Máquina | Detalle de Ventas) */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
@@ -1201,8 +1710,10 @@ export default function Monitoreo() {
             causes={causes}
           />
 
-          {/* BLOQUE 2: Esquema de Demoras (Pago -> Poll -> ACK) + Tabla por Cliente / Máquina / Ventas */}
+          {/* BLOQUE 2: Esquema de Demoras (Pago -> Poll -> ACK) + Gráfico Temporal + Tabla */}
           <AccreditationDelaysSection
+            trends={data?.dailyTrends || []}
+            period={period}
             latency={data?.latency}
             byClient={data?.byClient || []}
             byMachine={data?.byMachine || []}
