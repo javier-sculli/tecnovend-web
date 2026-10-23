@@ -53,6 +53,12 @@ const getLatencyTone = (pollToAckS, netOverheadS) => {
 function DailyTrendsChart({ trends, period }) {
   const [hoverIndex, setHoverIndex] = useState(null);
 
+  // Índice donde empieza "Hoy" cuando estamos en modo 24h (siempre antes del early return para respetar Rules of Hooks)
+  const todayStartIndex = useMemo(() => {
+    if (!trends || trends.length === 0 || period !== '24h') return -1;
+    return trends.findIndex((t, i) => i > 0 && t.is_today && !trends[i - 1].is_today);
+  }, [trends, period]);
+
   if (!trends || trends.length === 0) {
     return (
       <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
@@ -77,13 +83,6 @@ function DailyTrendsChart({ trends, period }) {
   const maxPct = Math.max(Math.ceil(rawMaxPct / 5) * 5, 15);
 
   const stepX = chartW / Math.max(trends.length, 1);
-
-  // Índice donde empieza "Hoy" cuando estamos en modo 24h
-  const todayStartIndex = useMemo(() => {
-    if (period !== '24h') return -1;
-    const idx = trends.findIndex((t, i) => i > 0 && t.is_today && !trends[i - 1].is_today);
-    return idx;
-  }, [trends, period]);
 
   return (
     <div className="card" style={{ padding: '18px 20px', position: 'relative' }}>
