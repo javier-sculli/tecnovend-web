@@ -21,7 +21,8 @@ router.get('/', requireAuth, async (req, res) => {
     clients = await db.prepare(`
       SELECT c.*, 
         COALESCE((SELECT role FROM memberships m WHERE m.client_id = c.id AND m.user_id = ?), 'administrador') AS my_role,
-        (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id) AS machine_count
+        (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id) AS machine_count,
+        (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id AND mm.employee_discount_enabled = 1) AS emp_discount_machine_count
       FROM clients c
       ORDER BY c.created_at DESC
     `).all(req.user.id);
@@ -29,7 +30,8 @@ router.get('/', requireAuth, async (req, res) => {
     // Normal users only see their own clients
     clients = await db.prepare(`
       SELECT c.*, m.role AS my_role,
-        (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id) AS machine_count
+        (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id) AS machine_count,
+        (SELECT COUNT(*) FROM machines mm WHERE mm.client_id = c.id AND mm.employee_discount_enabled = 1) AS emp_discount_machine_count
       FROM clients c
       JOIN memberships m ON m.client_id = c.id
       WHERE m.user_id = ?
@@ -85,7 +87,7 @@ router.get('/:id', requireAuth, async (req, res) => {
   if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
 
   const machines = await db.prepare(
-    'SELECT id, name, location, status, last_seen_at FROM machines WHERE client_id = ? ORDER BY created_at DESC'
+    'SELECT id, name, location, status, last_seen_at, COALESCE(employee_discount_enabled, 0) as employee_discount_enabled FROM machines WHERE client_id = ? ORDER BY created_at DESC'
   ).all(clientId);
   res.json({ ...client, machines });
 });

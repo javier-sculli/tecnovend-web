@@ -16,6 +16,7 @@ import docsRouter from './routes/docs.js';
 import dashboardRouter from './routes/dashboard.js';
 import firmwareRouter from './routes/firmware.js';
 import employeeDiscountsRouter from './routes/employee-discounts.js';
+import employeePortalRouter from './routes/employee-portal.js';
 
 // Inicializar BD (crea tablas y ejecuta migraciones)
 import db, { initDb } from './db/schema.js';
@@ -56,6 +57,7 @@ app.use('/api/docs', docsRouter);
 app.use('/api/dashboard', requireAuth, dashboardRouter);
 app.use('/api/firmware', requireAuth, firmwareRouter);
 app.use('/api/employee-discounts', requireAuth, employeeDiscountsRouter);
+app.use('/api/emp', employeePortalRouter);
 
 
 // Web de gestión: el mismo Express sirve el build de React (client/dist copiado

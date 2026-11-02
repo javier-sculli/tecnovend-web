@@ -232,6 +232,28 @@ export async function createOrder(externalPosId, { amount, description, external
   }, { clientId });
 }
 
+export async function createPreference({ items, externalReference, backUrls, autoReturn, statementDescriptor, payerEmail }, clientId) {
+  const payload = {
+    items,
+    external_reference: externalReference,
+    statement_descriptor: statementDescriptor || 'VendPoint',
+    back_urls: backUrls,
+    payer: payerEmail ? { email: payerEmail } : undefined,
+    payment_methods: {
+      installments: 1,
+    },
+  };
+
+  // Mercado Pago exige que back_urls.success sea HTTPS para poder usar auto_return ('approved'/'all').
+  // En entornos de desarrollo sobre HTTP (localhost), auto_return provoca error 400 en MP.
+  const isHttps = backUrls?.success && backUrls.success.startsWith('https://');
+  if (isHttps) {
+    payload.auto_return = autoReturn || 'approved';
+  }
+
+  return call('POST', '/checkout/preferences', payload, { clientId });
+}
+
 export async function deleteOrder(externalPosId) {
   // La nueva API de orders no tiene DELETE por pos_id; se cancela por order_id.
   // Por ahora no hacemos nada — las orders expiran solas.

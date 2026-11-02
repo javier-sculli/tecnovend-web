@@ -175,6 +175,10 @@ export default function Descuentos() {
   const [search, setSearch] = useState('');
   const [loadingEmp, setLoadingEmp] = useState(true);
 
+  // Lista de máquinas (Tab Máquinas)
+  const [machines, setMachines] = useState([]);
+  const [loadingMachines, setLoadingMachines] = useState(false);
+
   // Stats y Logs (Tab Dashboard)
   const [stats, setStats] = useState(null);
   const [logs, setLogs] = useState([]);
@@ -251,6 +255,105 @@ export default function Descuentos() {
     }
   };
 
+  // Cargar máquinas para el Tab Máquinas
+  const loadMachines = async () => {
+    setLoadingMachines(true);
+    try {
+      const data = await apiFetch('/api/employee-discounts/machines');
+      setMachines(data.machines || []);
+    } catch (e) {
+      showAlert('Error al cargar máquinas: ' + e.message, 'error');
+    } finally {
+      setLoadingMachines(false);
+    }
+  };
+
+  const toggleMachineDiscount = async (machineId, currentStatus) => {
+    try {
+      await apiFetch(`/api/employee-discounts/machines/${machineId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: !currentStatus }),
+      });
+      setMachines(prev => prev.map(m => m.id === machineId ? { ...m, employee_discount_enabled: !currentStatus ? 1 : 0 } : m));
+    } catch (e) {
+      showAlert('Error al actualizar máquina: ' + e.message, 'error');
+    }
+  };
+
+  const printCombinedForMachine = async (m) => {
+    try {
+      let mpImg = null;
+      try {
+        const pos = await apiFetch(`/api/mp/pos/${m.id}`);
+        mpImg = pos?.qr_code_base64 ? `data:image/png;base64,${pos.qr_code_base64}` : (pos?.qr?.image || null);
+      } catch (_) {}
+
+      const empUrl = `${window.location.origin}/e/${m.id}`;
+      const empQrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(empUrl)}`;
+
+      const vendPointLogoHtml = `
+        <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:14px">
+          <div style="width:36px;height:36px;border-radius:10px;background:radial-gradient(120% 120% at 0% 0%, #ed7a3a 0%, #c2410c 55%, #7c2d12 100%);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.12)">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="3" width="14" height="18" rx="2"/>
+              <line x1="9" y1="7" x2="15" y2="7"/>
+              <line x1="9" y1="11" x2="15" y2="11"/>
+              <rect x="13" y="14" width="4" height="4" rx="0.5"/>
+            </svg>
+          </div>
+          <div style="text-align:left">
+            <div style="font-size:24px;font-weight:900;letter-spacing:-0.5px;color:#18181b;line-height:1">VendPoint</div>
+            <div style="font-size:9.5px;font-weight:800;letter-spacing:1.5px;color:#71717a;text-transform:uppercase;margin-top:3px">PAGOS INTELIGENTES</div>
+          </div>
+        </div>
+      `;
+
+      const w = window.open('', '_blank');
+      w.document.write(`
+        <html><head><title>Cartel QR · ${m.name}</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 90vh; margin: 0; background: #fff; }
+          .card { border: 2px solid #18181b; border-radius: 16px; padding: 24px; max-width: 640px; text-align: center; }
+          .grid { display: flex; gap: 24px; justify-content: center; margin-top: 16px; }
+          .box { border: 1px solid #d4d4d8; border-radius: 12px; padding: 16px; flex: 1; max-width: 260px; }
+          h1 { margin: 0 0 4px; font-size: 20px; color: #18181b; }
+          h2 { margin: 8px 0 4px; font-size: 15px; }
+          img { width: 200px; height: 200px; display: block; margin: 0 auto; }
+          .badge { background: #009ee3; color: #fff; font-weight: bold; padding: 4px 10px; border-radius: 6px; font-size: 12px; display: inline-block; }
+          .badge-emp { background: #10b981; color: #fff; font-weight: bold; padding: 4px 10px; border-radius: 6px; font-size: 12px; display: inline-block; }
+          .sub { font-size: 12px; color: #71717a; margin-top: 8px; }
+        </style></head>
+        <body>
+          <div class="card">
+            ${vendPointLogoHtml}
+            <h1>${m.name}</h1>
+            <p style="margin: 0 0 16px; color: #71717a; font-size: 13.5px;">Elegí cómo abonar tu consumo en este equipo</p>
+            <div class="grid">
+              <div class="box">
+                <span class="badge">Público General</span>
+                <h2>Mercado Pago</h2>
+                ${mpImg ? `<img src="${mpImg}" />` : '<p style="color:#999;font-size:12px;padding:40px 0">Sin QR Mercado Pago</p>'}
+                <div class="sub">${m.qr_mode === 'fixed' ? `Precio: $${m.qr_fixed_amount}` : 'Escaneá e ingresá el monto'}</div>
+              </div>
+              <div class="box" style="border-color: #10b981; background: #f0fdf4;">
+                <span class="badge-emp">Beneficio Corporativo</span>
+                <h2>Exclusivo Empleados</h2>
+                <img src="${empQrSrc}" />
+                <div class="sub">Escaneá con tu celular para pagar con descuento</div>
+              </div>
+            </div>
+            <div style="margin-top: 18px; padding-top: 10px; border-top: 1px dashed #e4e4e7; font-size: 11px; color: #a1a1aa;">
+              Terminal ID: ${m.id} · Operado por VendPoint (vendpoint.com.ar)
+            </div>
+          </div>
+          <script>setTimeout(() => window.print(), 350);</script>
+        </body></html>`);
+      w.document.close();
+    } catch (e) {
+      showAlert('No se pudo abrir el cartel para imprimir: ' + e.message, 'error');
+    }
+  };
+
   const downloadTemplate = () => {
     const csvContent = "DNI,Email MP,Nombre,% Descuento\n12345678,empleado@empresa.com,Juan Perez,20\n87654321,maria@empresa.com,Maria Gomez,25";
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -272,6 +375,8 @@ export default function Descuentos() {
   useEffect(() => {
     if (activeTab === 'dashboard') {
       loadDashboardData(1);
+    } else if (activeTab === 'maquinas') {
+      loadMachines();
     }
   }, [activeTab]);
 
@@ -398,9 +503,19 @@ export default function Descuentos() {
                 <span className={`spill ${config.enabled ? 'ok' : 'normal'}`}>
                   {config.enabled ? 'Módulo Activo' : 'Módulo Inactivo'}
                 </span>
+                {config.enabled && (
+                  <span
+                    className={`spill ${Number(config.enabledMachines || 0) > 0 ? 'ok' : 'warn'}`}
+                    style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                    onClick={() => setActiveTab('maquinas')}
+                    title="Clic para gestionar máquinas habilitadas"
+                  >
+                    {config.enabledMachines ?? 0} de {config.totalMachines ?? 0} máquinas habilitadas
+                  </span>
+                )}
               </div>
               <div className="page-subtitle">
-                Programa de beneficios corporativos mediante reembolso automático de Mercado Pago (Cashback).
+                Programa de beneficios corporativos mediante QR exclusivo para empleados y pago bonificado.
               </div>
             </div>
           </div>
@@ -412,14 +527,21 @@ export default function Descuentos() {
               style={{ borderRadius: '8px 8px 0 0', borderBottom: 'none' }}
               onClick={() => setActiveTab('nomina')}
             >
-              {Icon.user} Nómina de Empleados y Configuración
+              {Icon.user} Nómina de Empleados
+            </button>
+            <button
+              className={`btn ${activeTab === 'maquinas' ? 'primary' : 'secondary'}`}
+              style={{ borderRadius: '8px 8px 0 0', borderBottom: 'none' }}
+              onClick={() => setActiveTab('maquinas')}
+            >
+              {Icon.machine} Máquinas Habilitadas y QRs
             </button>
             <button
               className={`btn ${activeTab === 'dashboard' ? 'primary' : 'secondary'}`}
               style={{ borderRadius: '8px 8px 0 0', borderBottom: 'none' }}
               onClick={() => setActiveTab('dashboard')}
             >
-              {Icon.chart} Dashboard de Consumos y Reembolsos
+              {Icon.chart} Dashboard de Consumo
             </button>
           </div>
 
@@ -610,18 +732,118 @@ export default function Descuentos() {
           )}
 
           {/* ───────────────────────────────────────────────────────────── */}
-          {/* TAB 2: DASHBOARD DE CONSUMOS */}
+          {/* TAB 2: MÁQUINAS HABILITADAS Y QRs */}
+          {/* ───────────────────────────────────────────────────────────── */}
+          {activeTab === 'maquinas' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <div className="card" style={{ padding: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <div>
+                    <div className="card-title" style={{ fontSize: 16, fontWeight: 600 }}>Máquinas con Beneficio Habilitado</div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-4)', marginTop: 2 }}>
+                      Elegí en qué máquinas de la organización aplica el descuento e imprimí su cartel QR para colocar en el equipo.
+                    </div>
+                  </div>
+                  <button className="btn" onClick={loadMachines} disabled={loadingMachines}>
+                    Actualizar
+                  </button>
+                </div>
+
+                {loadingMachines ? (
+                  <div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-4)' }}>Cargando máquinas…</div>
+                ) : machines.length === 0 ? (
+                  <div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-4)' }}>
+                    No hay máquinas registradas en esta organización.
+                  </div>
+                ) : (
+                  <div className="table-responsive">
+                    <table className="table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--ink-4)', fontSize: 12 }}>
+                          <th style={{ padding: '10px 12px' }}>Máquina</th>
+                          <th style={{ padding: '10px 12px' }}>Ubicación</th>
+                          <th style={{ padding: '10px 12px' }}>Modo / Precio</th>
+                          <th style={{ padding: '10px 12px' }}>Estado</th>
+                          <th style={{ padding: '10px 12px', textAlign: 'center' }}>Beneficio Empleados</th>
+                          <th style={{ padding: '10px 12px', textAlign: 'right' }}>Cartel QR</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {machines.map((m) => {
+                          const isEnabled = Boolean(m.employee_discount_enabled);
+                          return (
+                            <tr key={m.id} style={{ borderBottom: '1px solid var(--border)', fontSize: 13 }}>
+                              <td style={{ padding: '12px' }}>
+                                <div style={{ fontWeight: 600, color: 'var(--ink-1)' }}>{m.name}</div>
+                                <div style={{ fontSize: 11, color: 'var(--ink-4)' }}>{m.id}</div>
+                              </td>
+                              <td style={{ padding: '12px', color: 'var(--ink-3)' }}>
+                                {m.location || '—'}
+                              </td>
+                              <td style={{ padding: '12px' }}>
+                                <span className={`spill ${m.qr_mode === 'fixed' ? 'ok' : 'normal'}`}>
+                                  {m.qr_mode === 'fixed' ? `Fijo $${m.qr_fixed_amount}` : 'Libre'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '12px' }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: m.status === 'active' ? '#10b981' : '#ef4444' }} />
+                                  {m.status === 'active' ? 'Operativa' : 'Mantenimiento'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '12px', textAlign: 'center' }}>
+                                <button
+                                  type="button"
+                                  className={`switch ${isEnabled ? 'on' : ''}`}
+                                  onClick={() => toggleMachineDiscount(m.id, isEnabled)}
+                                  title={isEnabled ? 'Desactivar descuento' : 'Activar descuento'}
+                                />
+                              </td>
+                              <td style={{ padding: '12px', textAlign: 'right' }}>
+                                <div style={{ display: 'inline-flex', gap: 8 }}>
+                                  <a
+                                    className="btn"
+                                    href={`/e/${m.id}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{ fontSize: 12, padding: '5px 10px' }}
+                                    title="Abrir vista de empleado en nueva pestaña"
+                                  >
+                                    Ver Web
+                                  </a>
+                                  <button
+                                    className="btn primary"
+                                    style={{ fontSize: 12, padding: '5px 12px' }}
+                                    onClick={() => printCombinedForMachine(m)}
+                                  >
+                                    🖨 Imprimir Cartel
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ───────────────────────────────────────────────────────────── */}
+          {/* TAB 3: DASHBOARD DE CONSUMOS */}
           {/* ───────────────────────────────────────────────────────────── */}
           {activeTab === 'dashboard' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               {/* Tarjetas KPI */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
                 <div className="card" style={{ padding: 18 }}>
-                  <div style={{ fontSize: 12, color: 'var(--ink-3)', fontWeight: 500, marginBottom: 4 }}>Total Reembolsado ($)</div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-3)', fontWeight: 500, marginBottom: 4 }}>Total Bonificado / Ahorrado ($)</div>
                   <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--good)' }}>
                     ${(stats?.totalRefunded || 0).toLocaleString('es-AR')}
                   </div>
-                  <div style={{ fontSize: 11, color: 'var(--ink-4)', marginTop: 4 }}>Cashback devuelto en MP</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-4)', marginTop: 4 }}>Ahorro acumulado por empleados</div>
                 </div>
 
                 <div className="card" style={{ padding: 18 }}>
@@ -629,7 +851,7 @@ export default function Descuentos() {
                   <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--ink-1)' }}>
                     {stats?.totalTransactions || 0}
                   </div>
-                  <div style={{ fontSize: 11, color: 'var(--ink-4)', marginTop: 4 }}>Transacciones matcheadas</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-4)', marginTop: 4 }}>Transacciones completadas</div>
                 </div>
 
                 <div className="card" style={{ padding: 18 }}>

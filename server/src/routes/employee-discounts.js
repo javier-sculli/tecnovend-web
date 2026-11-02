@@ -32,9 +32,18 @@ router.get('/config', async (req, res) => {
       FROM clients WHERE id = ?
     `).get(clientId);
 
+    const machineCounts = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        COUNT(CASE WHEN employee_discount_enabled = 1 THEN 1 END) as enabled
+      FROM machines WHERE client_id = ?
+    `).get(clientId);
+
     res.json({
       enabled: Boolean(row?.employee_discounts_enabled),
       defaultDiscountPct: row?.default_discount_pct ?? 20,
+      totalMachines: Number(machineCounts?.total || 0),
+      enabledMachines: Number(machineCounts?.enabled || 0),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -57,6 +66,47 @@ router.put('/config', async (req, res) => {
     invalidateClientDiscountConfigCache(clientId);
 
     res.json({ ok: true, defaultDiscountPct: pct });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /machines (máquinas de la organización con flag de beneficio de empleados)
+router.get('/machines', async (req, res) => {
+  try {
+    const clientId = await getOrgId(req, res);
+    if (!clientId) return;
+
+    const rows = await db.prepare(`
+      SELECT id, name, location, qr_mode, qr_fixed_amount, pulse_value, 
+             COALESCE(employee_discount_enabled, 0) as employee_discount_enabled, status
+      FROM machines
+      WHERE client_id = ?
+      ORDER BY name ASC
+    `).all(clientId);
+
+    res.json({ machines: rows });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /machines/:id (activar o desactivar beneficio en una máquina)
+router.put('/machines/:id', async (req, res) => {
+  try {
+    const clientId = await getOrgId(req, res);
+    if (!clientId) return;
+
+    const { enabled } = req.body;
+    const isEnabled = enabled ? 1 : 0;
+
+    await db.prepare(`
+      UPDATE machines 
+      SET employee_discount_enabled = ?
+      WHERE id = ? AND client_id = ?
+    `).run(isEnabled, req.params.id, clientId);
+
+    res.json({ ok: true, id: req.params.id, employee_discount_enabled: isEnabled });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

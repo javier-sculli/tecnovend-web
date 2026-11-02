@@ -9,6 +9,7 @@ import Maquinas from './pages/Maquinas.jsx';
 import Pagos from './pages/Pagos.jsx';
 import Descuentos from './pages/Descuentos.jsx';
 import Monitoreo from './pages/Monitoreo.jsx';
+import PortalEmpleado from './pages/PortalEmpleado.jsx';
 
 // Gate de autenticación: sin sesión → /login (recordando a dónde iba).
 function RequireAuth({ children }) {
@@ -25,6 +26,9 @@ export default function App() {
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/maquinas" replace /> : <Login />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      {/* Portal público móvil para Empleados */}
+      <Route path="/e/:machineId" element={<PortalEmpleado />} />
+      <Route path="/empleados/:machineId" element={<PortalEmpleado />} />
       {/* Default → Máquinas (Dashboard oculto por ahora) */}
       <Route path="/" element={<Navigate to="/maquinas" replace />} />
       <Route path="/clientes" element={<RequireAuth><Clientes /></RequireAuth>} />

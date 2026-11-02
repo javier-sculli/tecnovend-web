@@ -300,6 +300,7 @@ router.put('/:id', async (req, res) => {
     qr_mode, qr_fixed_amount,
     target_fw_version, ota_url,
     poll_interval_s,
+    employee_discount_enabled,
   } = req.body;
 
   let newSerial = undefined;
@@ -363,7 +364,8 @@ router.put('/:id', async (req, res) => {
       wifi_password     = COALESCE(?, wifi_password),
       qr_mode           = COALESCE(?, qr_mode),
       qr_fixed_amount   = COALESCE(?, qr_fixed_amount),
-      poll_interval_s   = COALESCE(?, poll_interval_s)
+      poll_interval_s   = COALESCE(?, poll_interval_s),
+      employee_discount_enabled = COALESCE(?, employee_discount_enabled)
     WHERE id = ?
   `).run(
     name ?? null, location ?? null, address ?? null, model ?? null,
@@ -377,6 +379,7 @@ router.put('/:id', async (req, res) => {
     wifi_ssid ?? null, wifi_user ?? null, wifi_password ?? null,
     qr_mode ?? null, qr_fixed_amount != null ? Number(qr_fixed_amount) : null,
     poll_interval_s != null ? Number(poll_interval_s) : null,
+    employee_discount_enabled !== undefined ? (employee_discount_enabled ? 1 : 0) : null,
     req.params.id,
   );
 

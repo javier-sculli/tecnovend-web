@@ -191,8 +191,58 @@ export async function initDb() {
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_qr_order_id TEXT;`);
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_qr_order_at TIMESTAMP;`);
   await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS last_qr_order_expires_at TIMESTAMP;`);
+  await pool.query(`ALTER TABLE machines ADD COLUMN IF NOT EXISTS employee_discount_enabled INTEGER NOT NULL DEFAULT 0;`);
   await pool.query(`ALTER TABLE pulse_queue ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP;`);
   await pool.query(`ALTER TABLE pulse_queue ADD COLUMN IF NOT EXISTS first_delivered_at TIMESTAMP;`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS employee_auth_otps (
+      id          TEXT PRIMARY KEY,
+      client_id   TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      employee_id TEXT NOT NULL REFERENCES client_employees(id) ON DELETE CASCADE,
+      email       TEXT NOT NULL,
+      code_hash   TEXT NOT NULL,
+      attempts    INTEGER NOT NULL DEFAULT 0,
+      expires_at  TIMESTAMP NOT NULL,
+      used_at     TIMESTAMP,
+      created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_emp_otps_lookup ON employee_auth_otps(client_id, LOWER(email), created_at);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS employee_sessions (
+      id           TEXT PRIMARY KEY,
+      client_id    TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      employee_id  TEXT NOT NULL REFERENCES client_employees(id) ON DELETE CASCADE,
+      token_hash   TEXT NOT NULL UNIQUE,
+      user_agent   TEXT,
+      expires_at   TIMESTAMP NOT NULL,
+      last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_emp_sessions_token ON employee_sessions(token_hash);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_emp_sessions_employee ON employee_sessions(employee_id);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS employee_payment_intents (
+      id               TEXT PRIMARY KEY,
+      machine_id       TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      client_id        TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      employee_id      TEXT NOT NULL REFERENCES client_employees(id) ON DELETE CASCADE,
+      list_amount      INTEGER NOT NULL,
+      discount_pct     INTEGER NOT NULL,
+      discount_amount  INTEGER NOT NULL,
+      charge_amount    INTEGER NOT NULL,
+      mp_preference_id TEXT,
+      mp_payment_id    TEXT,
+      status           TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','paid','expired','failed')),
+      created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      paid_at          TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_emp_intents_machine ON employee_payment_intents(machine_id, status);`);
 
 
   await pool.query(`

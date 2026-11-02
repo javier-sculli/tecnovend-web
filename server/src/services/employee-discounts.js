@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import db from '../db/schema.js';
-import { getPayment, refundPaymentMP } from './mp.js';
+import { enqueuePayment } from './payments.js';
+import { processPendingRefunds } from './refunds.js';
+import { getStoredToken, getPayment } from './mp.js';
 
 // Caché en memoria para status del módulo por cliente (evita consultar la BD en cada pago)
 const _configCache = new Map();
@@ -30,132 +32,117 @@ export async function getClientDiscountConfig(clientId) {
   return config;
 }
 
-function genLogId() {
+export function genLogId() {
   return 'edl_' + crypto.randomBytes(8).toString('hex');
 }
 
 /**
- * Busca un empleado activo de la organización por email de MP o por DNI.
+ * Fulfills an employee payment intent: validates payment, enqueues pulses on the full
+ * list amount, updates the intent to paid, and logs the employee benefit.
  */
-export async function matchEmployee(clientId, payerEmail, payerDni) {
-  if (!clientId) return null;
-
-  const normalizedEmail = payerEmail ? String(payerEmail).trim().toLowerCase() : null;
-  const cleanDni = payerDni ? String(payerDni).replace(/\D/g, '') : null;
-
-  if (normalizedEmail) {
-    const empByEmail = await db.prepare(`
-      SELECT * FROM client_employees 
-      WHERE client_id = ? AND LOWER(email) = ? AND status = 'active'
-    `).get(clientId, normalizedEmail);
-
-    if (empByEmail) return empByEmail;
+export async function fulfillEmployeePaymentIntent(intentId, { mpPaymentId, paymentData } = {}) {
+  const intent = await db.prepare('SELECT * FROM employee_payment_intents WHERE id = ?').get(intentId);
+  if (!intent) {
+    return { ok: false, error: 'Intent no encontrado' };
+  }
+  if (intent.status === 'paid') {
+    return { ok: true, alreadyPaid: true, intent };
   }
 
-  if (cleanDni) {
-    const empByDni = await db.prepare(`
-      SELECT * FROM client_employees 
-      WHERE client_id = ? AND (dni = ? OR REPLACE(REPLACE(dni, '.', ''), '-', '') = ?) AND status = 'active'
-    `).get(clientId, payerDni, cleanDni);
-
-    if (empByDni) return empByDni;
+  let payment = paymentData;
+  if (!payment && mpPaymentId) {
+    try {
+      payment = await getPayment(mpPaymentId, intent.client_id);
+    } catch (_) {}
   }
 
-  return null;
-}
-
-/**
- * Evalúa y procesa el descuento corporativo para un pago aprobado.
- */
-export async function processEmployeeDiscount({ paymentId, mpPaymentId, amount, ownerClientId, mpPaymentObj }) {
-  if (!ownerClientId || !mpPaymentId || !amount || amount <= 0) return null;
-
-  try {
-    // 1. Verificar si el cliente tiene el módulo habilitado (vía caché en memoria 0 ms)
-    const client = await getClientDiscountConfig(ownerClientId);
-
-    if (!client || !client.enabled) {
-      return null;
-    }
-
-    // 2. Obtener datos del payer si no vienen en la llamada
-    let paymentData = mpPaymentObj;
-    if (!paymentData || !paymentData.payer) {
-      try {
-        paymentData = await getPayment(mpPaymentId, ownerClientId);
-      } catch (e) {
-        console.warn(`[employee-discount] no se pudo consultar el pago ${mpPaymentId} en MP: ${e.message}`);
-        return null;
+  // Si no tenemos el pago o no está aprobado, buscarlo activamente en MP por external_reference
+  if (!payment || payment.status !== 'approved') {
+    try {
+      const token = await getStoredToken(intent.client_id);
+      if (token) {
+        const searchRes = await fetch(`https://api.mercadopago.com/v1/payments/search?external_reference=${encodeURIComponent(intent.id)}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          const approved = (searchData.results || []).find(p => p.status === 'approved');
+          if (approved) {
+            payment = approved;
+          }
+        }
       }
+    } catch (e) {
+      console.warn(`[emp-payment] Error buscando pago para intent ${intentId}:`, e.message);
     }
+  }
 
-    const payerEmail = paymentData?.payer?.email || null;
-    const payerDni =
-      paymentData?.payer?.identification?.number ||
-      paymentData?.card?.cardholder?.identification?.number ||
-      paymentData?.point_of_interaction?.transaction_data?.payer?.identification?.number ||
-      null;
+  if (!payment || payment.status !== 'approved') {
+    return { ok: false, pending: true, intent };
+  }
 
-    if (!payerEmail && !payerDni) {
-      console.log(`[employee-discount] pago ${mpPaymentId} sin datos de payer (email/DNI) en MP`);
-      return null;
-    }
+  const machine = await db.prepare('SELECT * FROM machines WHERE id = ?').get(intent.machine_id);
+  if (!machine) {
+    return { ok: false, error: `Máquina ${intent.machine_id} no encontrada` };
+  }
 
-    // 3. Matchear empleado
-    const employee = await matchEmployee(ownerClientId, payerEmail, payerDni);
-    if (!employee) {
-      return null;
-    }
+  const amountPaid = Math.floor(payment.transaction_amount || intent.charge_amount);
+  const outOfService = machine.status !== 'active';
+  // Pulsos calculados sobre el MONTO DE LISTA completo
+  const pulses = outOfService ? 0 : Math.floor(intent.list_amount / machine.pulse_value);
+  const noDispensa = pulses < 1;
 
-    // 4. Calcular el monto del descuento
-    const discountPct = Number(employee.discount_pct) > 0 ? Number(employee.discount_pct) : (Number(client.default_discount_pct) || 20);
-    const refundAmount = Math.round(amount * (discountPct / 100));
+  const queued = await enqueuePayment(machine.id, String(payment.id), amountPaid, pulses, { 
+    idKind: 'payment', 
+    refundPending: noDispensa 
+  });
 
-    if (refundAmount <= 0 || refundAmount >= amount) {
-      console.warn(`[employee-discount] monto de descuento inválido: $${refundAmount} sobre pago $${amount} (${discountPct}%)`);
-      return null;
-    }
-
-    console.log(`[employee-discount] Matcheado empleado ${employee.name || employee.id} (DNI ${employee.dni || 'S/D'}, Mail ${employee.email || 'S/M'}). Descuento: ${discountPct}% -> Reembolso $${refundAmount} sobre $${amount}`);
+  if (queued) {
+    await db.prepare(`
+      UPDATE employee_payment_intents 
+      SET status = 'paid', mp_payment_id = ?, paid_at = datetime('now')
+      WHERE id = ?
+    `).run(String(payment.id), intent.id);
 
     const logId = genLogId();
     await db.prepare(`
       INSERT INTO employee_discount_logs (
-        id, payment_id, client_id, employee_id, payer_email, payer_dni, 
+        id, payment_id, client_id, employee_id, payer_email, payer_dni,
         original_amount, discount_pct, refund_amount, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', datetime('now'))
     `).run(
-      logId, paymentId, ownerClientId, employee.id, payerEmail, payerDni,
-      amount, discountPct, refundAmount
+      logId,
+      queued,
+      intent.client_id,
+      intent.employee_id,
+      payment.payer?.email || null,
+      payment.payer?.identification?.number || null,
+      intent.list_amount,
+      intent.discount_pct,
+      intent.discount_amount
     );
 
-    // 5. Ejecutar el reembolso parcial en Mercado Pago
-    try {
-      const refundRes = await refundPaymentMP(mpPaymentId, ownerClientId, {
-        amount: refundAmount,
-        idempotencyKey: `emp-disc-${paymentId}`
-      });
-
-      const mpRefundId = refundRes?.id ? String(refundRes.id) : null;
-      await db.prepare(`
-        UPDATE employee_discount_logs 
-        SET status = 'done', mp_refund_id = ? 
-        WHERE id = ?
-      `).run(mpRefundId, logId);
-
-      console.log(`[employee-discount] ✓ Reembolso parcial de $${refundAmount} exitoso en MP para pago ${mpPaymentId} (Ref: ${mpRefundId})`);
-      return { id: logId, refundAmount, discountPct, employee };
-    } catch (refundErr) {
-      console.error(`[employee-discount] ❌ Falló reembolso parcial en MP para pago ${mpPaymentId}: ${refundErr.message}`);
-      await db.prepare(`
-        UPDATE employee_discount_logs 
-        SET status = 'failed', error_message = ? 
-        WHERE id = ?
-      `).run(refundErr.message, logId);
-      return null;
-    }
-  } catch (err) {
-    console.error(`[employee-discount] Excepción procesando descuento: ${err.message}`);
-    return null;
+    console.log(`[emp-payment] ✓ Acreditado intent ${intent.id} (pago ${payment.id}) → $${amountPaid} ($${intent.list_amount} lista, ${intent.discount_pct}% desc) → ${pulses} pulsos → ${machine.id}`);
+  } else {
+    // Si ya estaba encolado el pago en payments, aseguramos que el intent esté marcado como paid
+    await db.prepare(`
+      UPDATE employee_payment_intents 
+      SET status = 'paid', mp_payment_id = ?, paid_at = datetime('now')
+      WHERE id = ?
+    `).run(String(payment.id), intent.id);
   }
+
+  if (queued && noDispensa) {
+    await processPendingRefunds();
+  }
+
+  return { 
+    ok: true, 
+    paid: true, 
+    pulses, 
+    amountPaid, 
+    machineId: machine.id,
+    paymentId: payment.id 
+  };
 }
+

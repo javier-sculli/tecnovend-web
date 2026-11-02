@@ -52,6 +52,11 @@ function ClientList({ clients, loading, onOpen, onNew, isSuperAdmin }) {
             </div>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--ink-2)' }}>
               {Icon.machine}<span className="mono">{c.machine_count ?? 0}</span>
+              {Boolean(c.employee_discounts_enabled) && (
+                <span className={`spill ${Number(c.emp_discount_machine_count || 0) > 0 ? 'ok' : 'warn'}`} style={{ marginLeft: 6, fontSize: 11 }} title="Máquinas con beneficio habilitado">
+                  {c.emp_discount_machine_count ?? 0} con beneficio
+                </span>
+              )}
             </div>
             <button className="actions-menu" onClick={(e) => { e.stopPropagation(); onOpen(c.id); }}>{Icon.chev}</button>
           </div>
@@ -208,6 +213,9 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
   const [showNewUser, setShowNewUser] = useState(false);
 
   const { orgs, user: currentUser, isSuperAdmin } = useAuth();
+
+  const totalMachinesCount = client?.machines?.length || 0;
+  const enabledMachinesCount = (client?.machines || []).filter(m => Boolean(m.employee_discount_enabled)).length;
   const myRoleInThisOrg = (orgs || []).find(o => o.id === id)?.role;
   const canManageUsers = isSuperAdmin || myRoleInThisOrg === 'administrador';
 
@@ -504,9 +512,25 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
                     />
                     <div>
                       <div style={{ fontWeight: 600, fontSize: 14 }}>Descuentos a Empleados (Beneficios Corporativos)</div>
-                      <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>Permite al cliente cargar su nómina para cashback automático en Mercado Pago</div>
+                      <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>Permite al cliente cargar su nómina para cobro bonificado con QR</div>
                     </div>
                   </label>
+
+                  {Boolean(form.employee_discounts_enabled) && (
+                    <div style={{ marginTop: 4, padding: '10px 14px', background: 'var(--panel-2, #f4f4f5)', borderRadius: 8, fontSize: 12.5 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: 'var(--ink-2)', fontWeight: 500 }}>Máquinas con beneficio activo:</span>
+                        <span className={`spill ${enabledMachinesCount > 0 ? 'ok' : 'warn'}`} style={{ fontWeight: 700 }}>
+                          {enabledMachinesCount} de {totalMachinesCount} máquinas
+                        </span>
+                      </div>
+                      {enabledMachinesCount === 0 && totalMachinesCount > 0 && (
+                        <div style={{ fontSize: 11.5, color: 'var(--warn, #b45309)', marginTop: 6 }}>
+                          ⚠️ El beneficio está activo para el cliente pero ninguna máquina lo tiene habilitado. Podés activarlas desde la solapa Descuentos o el detalle de cada máquina.
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -535,7 +559,14 @@ export function ClientDetail({ id, onBack, onSaved, hideBackBtn, onlyUsers }) {
                   </div>
                   <div style={{ color: 'var(--ink-2)' }}>{m.location || '—'}</div>
                   <div></div>
-                  <div><span className={'spill ' + (m.status === 'active' ? 'ok' : 'warn')}>{m.status}</span></div>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span className={'spill ' + (m.status === 'active' ? 'ok' : 'warn')}>{m.status}</span>
+                    {Boolean(form.employee_discounts_enabled) && (
+                      <span className={'spill ' + (m.employee_discount_enabled ? 'ok' : 'off')} style={{ fontSize: 11 }}>
+                        {m.employee_discount_enabled ? 'Beneficio ON' : 'Beneficio OFF'}
+                      </span>
+                    )}
+                  </div>
                   <div></div>
                 </div>
               ))}

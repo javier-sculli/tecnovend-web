@@ -1023,6 +1023,10 @@ function MachineQRCard({ m, onRefresh }) {
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showSimulate, setShowSimulate] = useState(false);
+  const [activeQrTab, setActiveQrTab] = useState('mp'); // 'mp' | 'emp'
+
+  const empUrl = typeof window !== 'undefined' ? `${window.location.origin}/e/${m.id}` : '';
+  const empQrSrc = empUrl ? `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(empUrl)}` : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -1039,19 +1043,116 @@ function MachineQRCard({ m, onRefresh }) {
     : (pos?.qr?.image || null);
 
   const isFixed = m.qr_mode === 'fixed';
+  const hasEmpDiscount = Boolean(m.employee_discount_enabled);
+
+  const vendPointLogoHtml = `
+    <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:14px">
+      <div style="width:36px;height:36px;border-radius:10px;background:radial-gradient(120% 120% at 0% 0%, #ed7a3a 0%, #c2410c 55%, #7c2d12 100%);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.12)">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="3" width="14" height="18" rx="2"/>
+          <line x1="9" y1="7" x2="15" y2="7"/>
+          <line x1="9" y1="11" x2="15" y2="11"/>
+          <rect x="13" y="14" width="4" height="4" rx="0.5"/>
+        </svg>
+      </div>
+      <div style="text-align:left">
+        <div style="font-size:24px;font-weight:900;letter-spacing:-0.5px;color:#18181b;line-height:1">VendPoint</div>
+        <div style="font-size:9.5px;font-weight:800;letter-spacing:1.5px;color:#71717a;text-transform:uppercase;margin-top:3px">PAGOS INTELIGENTES</div>
+      </div>
+    </div>
+  `;
 
   const printQR = () => {
     if (!imgSrc) return;
     const w = window.open('', '_blank');
     w.document.write(`
-      <html><head><title>QR · ${m.name}</title></head>
-      <body style="display:grid;place-items:center;font-family:sans-serif">
-        <div style="text-align:center">
-          <h2 style="margin-bottom:4px">${m.name}</h2>
-          <p style="margin-top:0;color:#555">${isFixed ? `Precio fijo: $${m.qr_fixed_amount}` : 'Escaneá e ingresá el monto'}</p>
-          <img src="${imgSrc}" style="width:340px" onload="setTimeout(()=>window.print(),300)" />
-          <p style="color:#999;font-size:12px">${m.id} · Mercado Pago</p>
+      <html><head><title>QR · ${m.name}</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 90vh; margin: 0; background: #fff; }
+        .card { border: 2px solid #009ee3; border-radius: 16px; padding: 24px; max-width: 380px; text-align: center; }
+        img { width: 250px; height: 250px; display: block; margin: 0 auto; }
+      </style></head>
+      <body>
+        <div class="card">
+          ${vendPointLogoHtml}
+          <span style="background: #009ee3; color: #fff; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 800; letter-spacing: 0.5px;">MERCADO PAGO</span>
+          <h2 style="margin: 12px 0 4px; font-size: 18px; color: #18181b;">${m.name}</h2>
+          <p style="margin: 0 0 16px; color: #71717a; font-size: 13px;">${isFixed ? `Precio fijo: $${m.qr_fixed_amount}` : 'Escaneá e ingresá el monto en la app'}</p>
+          <img src="${imgSrc}" onload="setTimeout(()=>window.print(),300)" />
+          <div style="margin-top: 14px; padding-top: 8px; border-top: 1px dashed #e4e4e7; font-size: 11px; color: #a1a1aa;">
+            ${m.id} · Pagá seguro con Mercado Pago · VendPoint
+          </div>
         </div>
+      </body></html>`);
+    w.document.close();
+  };
+
+  const printEmpQR = () => {
+    if (!empQrSrc) return;
+    const w = window.open('', '_blank');
+    w.document.write(`
+      <html><head><title>QR Empleados · ${m.name}</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 90vh; margin: 0; background: #fff; }
+        .card { border: 2px solid #10b981; border-radius: 16px; padding: 24px; max-width: 380px; text-align: center; }
+        img { width: 250px; height: 250px; display: block; margin: 0 auto; }
+      </style></head>
+      <body>
+        <div class="card">
+          ${vendPointLogoHtml}
+          <span style="background:#10b981;color:#fff;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:800;letter-spacing:0.5px">BENEFICIO EMPLEADOS</span>
+          <h2 style="margin:12px 0 4px;font-size:18px;color:#18181b">${m.name}</h2>
+          <p style="margin:0 0 16px;color:#71717a;font-size:13px">Escaneá con tu celular para acceder a tu descuento</p>
+          <img src="${empQrSrc}" onload="setTimeout(()=>window.print(),300)" />
+          <p style="color:#a1a1aa;font-size:11px;margin-top:12px">${empUrl}</p>
+          <div style="margin-top: 12px; padding-top: 8px; border-top: 1px dashed #e4e4e7; font-size: 11px; color: #a1a1aa;">
+            Terminal ID: ${m.id} · Powered by VendPoint
+          </div>
+        </div>
+      </body></html>`);
+    w.document.close();
+  };
+
+  const printCombined = () => {
+    const w = window.open('', '_blank');
+    w.document.write(`
+      <html><head><title>Cartel QR · ${m.name}</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 90vh; margin: 0; background: #fff; }
+        .card { border: 2px solid #18181b; border-radius: 16px; padding: 24px; max-width: 640px; text-align: center; }
+        .grid { display: flex; gap: 24px; justify-content: center; margin-top: 16px; }
+        .box { border: 1px solid #d4d4d8; border-radius: 12px; padding: 16px; flex: 1; max-width: 260px; }
+        h1 { margin: 0 0 4px; font-size: 20px; color: #18181b; }
+        h2 { margin: 8px 0 4px; font-size: 15px; }
+        img { width: 200px; height: 200px; display: block; margin: 0 auto; }
+        .badge { background: #009ee3; color: #fff; font-weight: bold; padding: 4px 10px; border-radius: 6px; font-size: 12px; display: inline-block; }
+        .badge-emp { background: #10b981; color: #fff; font-weight: bold; padding: 4px 10px; border-radius: 6px; font-size: 12px; display: inline-block; }
+        .sub { font-size: 12px; color: #71717a; margin-top: 8px; }
+      </style></head>
+      <body>
+        <div class="card">
+          ${vendPointLogoHtml}
+          <h1>${m.name}</h1>
+          <p style="margin: 0 0 16px; color: #71717a; font-size: 13.5px;">Elegí cómo abonar tu consumo en este equipo</p>
+          <div class="grid">
+            <div class="box">
+              <span class="badge">Público General</span>
+              <h2>Mercado Pago</h2>
+              ${imgSrc ? `<img src="${imgSrc}" />` : '<p style="color:#999;font-size:12px;padding:40px 0">Sin QR</p>'}
+              <div class="sub">${isFixed ? `Precio: $${m.qr_fixed_amount}` : 'Escaneá e ingresá el monto'}</div>
+            </div>
+            <div class="box" style="border-color: #10b981; background: #f0fdf4;">
+              <span class="badge-emp">Beneficio Corporativo</span>
+              <h2>Exclusivo Empleados</h2>
+              <img src="${empQrSrc}" />
+              <div class="sub">Escaneá con tu celular para pagar con descuento</div>
+            </div>
+          </div>
+          <div style="margin-top: 18px; padding-top: 10px; border-top: 1px dashed #e4e4e7; font-size: 11px; color: #a1a1aa;">
+            Terminal ID: ${m.id} · Operado por VendPoint (vendpoint.com.ar)
+          </div>
+        </div>
+        <script>setTimeout(() => window.print(), 350);</script>
       </body></html>`);
     w.document.close();
   };
@@ -1061,72 +1162,137 @@ function MachineQRCard({ m, onRefresh }) {
       <div className="card-head">
         <div>
           <div className="card-title" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>{Icon.qr} QR de la máquina</div>
-          <div className="card-sub">El código que se imprime y pega en el equipo.</div>
+          <div className="card-sub">Códigos para imprimir y colocar en el equipo.</div>
         </div>
-        <span className={'spill ' + (isFixed ? 'ok' : 'off')}>
-          {isFixed ? `Precio fijo · $${m.qr_fixed_amount}` : 'Monto libre'}
-        </span>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <div style={{ display: 'inline-flex', background: 'var(--panel-2, #f4f4f5)', padding: 3, borderRadius: 8 }}>
+            <button
+              type="button"
+              onClick={() => setActiveQrTab('mp')}
+              style={{
+                border: 'none',
+                background: activeQrTab === 'mp' ? '#fff' : 'transparent',
+                fontWeight: activeQrTab === 'mp' ? 700 : 500,
+                fontSize: 12,
+                padding: '4px 10px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                color: activeQrTab === 'mp' ? 'var(--brand, #2563eb)' : 'var(--ink-3)'
+              }}
+            >
+              Mercado Pago
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveQrTab('emp')}
+              style={{
+                border: 'none',
+                background: activeQrTab === 'emp' ? '#fff' : 'transparent',
+                fontWeight: activeQrTab === 'emp' ? 700 : 500,
+                fontSize: 12,
+                padding: '4px 10px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                color: activeQrTab === 'emp' ? '#10b981' : 'var(--ink-3)'
+              }}
+            >
+              Empleados {hasEmpDiscount ? '✓' : ''}
+            </button>
+          </div>
+        </div>
       </div>
       <div className="card-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-        {loading ? (
-          <div style={{ padding: 24, color: 'var(--ink-4)', fontSize: 13 }}>Cargando QR…</div>
-        ) : err ? (
-          <div style={{ padding: 18, textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
-            {err.includes('Sin POS') || err.includes('no_pos')
-              ? <>Esta máquina no tiene caja QR de MP todavía.<br /><span style={{ fontSize: 12 }}>Tageala desde la card "Tageo MP" para generar su QR.</span></>
-              : <>No se pudo cargar el QR: {err}</>}
-            <div style={{ marginTop: 14 }}>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setShowSimulate(true)}
-                style={{
-                  background: 'var(--ok, #16a34a)',
-                  color: '#fff',
-                  border: '1px solid #15803d',
-                  fontWeight: 600,
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)'
-                }}
-              >
-                {Icon.pulse} Simular Pago
-              </button>
-            </div>
-          </div>
-        ) : (
+        {activeQrTab === 'emp' ? (
+          /* TAB QR EMPLEADOS */
           <>
-            <div style={{ borderRadius: 12, border: '1px solid var(--line-2)', padding: 12, background: '#fff' }}>
-              {imgSrc
-                ? <img src={imgSrc} alt={`QR de ${m.name}`} style={{ display: 'block', width: 190, height: 190 }} />
-                : <div style={{ width: 190, height: 190, display: 'grid', placeItems: 'center', color: 'var(--ink-4)', fontSize: 12 }}>Sin imagen QR</div>}
+            <div style={{ borderRadius: 12, border: '2px solid #10b981', padding: 12, background: '#fff' }}>
+              <img src={empQrSrc} alt={`QR Empleados ${m.name}`} style={{ display: 'block', width: 190, height: 190 }} />
             </div>
             <div style={{ fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
-              {isFixed
-                ? <>Al escanear, el cliente ve <strong>${m.qr_fixed_amount}</strong> ya cargado.</>
-                : <>Al escanear, el cliente ingresa el monto que quiere pagar.</>}
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setShowSimulate(true)}
-                style={{
-                  background: 'var(--ok, #16a34a)',
-                  color: '#fff',
-                  border: '1px solid #15803d',
-                  fontWeight: 600,
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)'
-                }}
-              >
-                {Icon.pulse} Simular Pago
-              </button>
-              <button className="btn" onClick={printQR} disabled={!imgSrc}>{Icon.download} Imprimir</button>
-              {imgSrc && (
-                <a className="btn" href={imgSrc} download={`qr_${m.id}.png`} target="_blank" rel="noreferrer">
-                  {Icon.qr} Descargar PNG
-                </a>
+              {hasEmpDiscount ? (
+                <>Escaneo directo para empleados: ingresan con su mail corporativo y pagan con descuento.</>
+              ) : (
+                <span style={{ color: '#ef4444' }}>
+                  El beneficio de empleados no está activado en esta máquina. Podés activarlo en la solapa Configuración.
+                </span>
               )}
             </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button className="btn" onClick={printEmpQR} style={{ border: '1px solid #10b981', color: '#10b981' }}>
+                {Icon.download} Imprimir QR Empleados
+              </button>
+              <button className="btn primary" onClick={printCombined} disabled={!imgSrc}>
+                🖨 Imprimir Cartel Combinado (Ambos QRs)
+              </button>
+            </div>
           </>
+        ) : (
+          /* TAB QR MERCADO PAGO */
+          loading ? (
+            <div style={{ padding: 24, color: 'var(--ink-4)', fontSize: 13 }}>Cargando QR…</div>
+          ) : err ? (
+            <div style={{ padding: 18, textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
+              {err.includes('Sin POS') || err.includes('no_pos')
+                ? <>Esta máquina no tiene caja QR de MP todavía.<br /><span style={{ fontSize: 12 }}>Tageala desde la card "Tageo MP" para generar su QR.</span></>
+                : <>No se pudo cargar el QR: {err}</>}
+              <div style={{ marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setShowSimulate(true)}
+                  style={{
+                    background: 'var(--ok, #16a34a)',
+                    color: '#fff',
+                    border: '1px solid #15803d',
+                    fontWeight: 600,
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.06)'
+                  }}
+                >
+                  {Icon.pulse} Simular Pago
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ borderRadius: 12, border: '1px solid var(--line-2)', padding: 12, background: '#fff' }}>
+                {imgSrc
+                  ? <img src={imgSrc} alt={`QR de ${m.name}`} style={{ display: 'block', width: 190, height: 190 }} />
+                  : <div style={{ width: 190, height: 190, display: 'grid', placeItems: 'center', color: 'var(--ink-4)', fontSize: 12 }}>Sin imagen QR</div>}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
+                {isFixed
+                  ? <>Al escanear, el cliente ve <strong>${m.qr_fixed_amount}</strong> ya cargado.</>
+                  : <>Al escanear, el cliente ingresa el monto que quiere pagar.</>}
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setShowSimulate(true)}
+                  style={{
+                    background: 'var(--ok, #16a34a)',
+                    color: '#fff',
+                    border: '1px solid #15803d',
+                    fontWeight: 600,
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.06)'
+                  }}
+                >
+                  {Icon.pulse} Simular Pago
+                </button>
+                <button className="btn" onClick={printQR} disabled={!imgSrc}>{Icon.download} Imprimir</button>
+                {imgSrc && (
+                  <a className="btn" href={imgSrc} download={`qr_${m.id}.png`} target="_blank" rel="noreferrer">
+                    {Icon.qr} Descargar PNG
+                  </a>
+                )}
+                {hasEmpDiscount && (
+                  <button className="btn" onClick={printCombined} disabled={!imgSrc}>
+                    🖨 Imprimir Cartel Combinado
+                  </button>
+                )}
+              </div>
+            </>
+          )
         )}
       </div>
 
@@ -1632,6 +1798,7 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
   const [wifiPassword, setWifiPassword] = useState(m?.wifi_password ?? "");
   const [qrMode, setQrMode] = useState(m?.qr_mode ?? "dynamic");
   const [qrFixedAmount, setQrFixedAmount] = useState(m?.qr_fixed_amount ?? "");
+  const [employeeDiscountEnabled, setEmployeeDiscountEnabled] = useState(Boolean(m?.employee_discount_enabled));
   const [showWifiPass, setShowWifiPass] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [tab, setTab] = useState("config");
@@ -1663,6 +1830,7 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
       setWifiPassword(m.wifi_password ?? "");
       setQrMode(m.qr_mode ?? "dynamic");
       setQrFixedAmount(m.qr_fixed_amount ?? "");
+      setEmployeeDiscountEnabled(Boolean(m.employee_discount_enabled));
       setTargetFwVersion(m.target_fw_version ?? "");
       setCustomFwMode(false);
     }
@@ -1717,6 +1885,7 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
       wifi_password: wifiPassword,
       qr_mode: qrMode,
       ...(qrMode === "fixed" ? { qr_fixed_amount: Number(qrFixedAmount) } : {}),
+      employee_discount_enabled: employeeDiscountEnabled ? 1 : 0,
       target_fw_version: cleanVersion || null,
       ota_url: generatedOtaUrl,
     });
@@ -1969,6 +2138,22 @@ function MachineDetail({ id, machines, onBack, onUpdateMachine, onRefresh, onDel
                   </div>
                 </div>
               )}
+              {/* Beneficio Empleados */}
+              <div className="kv">
+                <span className="k">Beneficio Empleados</span>
+                <div className="v v-edit" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <button
+                    type="button"
+                    className={"switch " + (employeeDiscountEnabled ? "on" : "")}
+                    onClick={() => setEmployeeDiscountEnabled(!employeeDiscountEnabled)}
+                    disabled={!editMode}
+                    title={employeeDiscountEnabled ? "Habilitado en esta máquina" : "Deshabilitado"}
+                  />
+                  <span style={{ fontSize: 11, color: "var(--ink-4)" }}>
+                    {employeeDiscountEnabled ? "Habilitado (con QR propio)" : "Deshabilitado"}
+                  </span>
+                </div>
+              </div>
               <div className="kv">
                 <span className="k">Valor Pulso</span>
                 <div className="v v-edit">

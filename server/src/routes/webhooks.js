@@ -1,11 +1,12 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import newrelic from 'newrelic';
 import db from '../db/schema.js';
 import { verifyWebhookSignature, getPaymentAny, getOrderAny, clientByMpUser } from '../services/mp.js';
 import { processPendingRefunds } from '../services/refunds.js';
 import { armFixedQR, reportQrMiss } from '../services/qr.js';
 import { findMachine, enqueuePayment, isOurOrderRef } from '../services/payments.js';
-import { processEmployeeDiscount } from '../services/employee-discounts.js';
+import { fulfillEmployeePaymentIntent } from '../services/employee-discounts.js';
 
 const router = Router();
 
@@ -105,12 +106,6 @@ router.post('/mercadopago', async (req, res) => {
       else if (queued) console.log(`[webhook] ⚠ order ${dataId} → $${amount} sin pulsos (< pulse_value $${machine.pulse_value}) → reembolso`);
       await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: order, posIdFound: posId, machineFound: machine.id, result });
       if (queued && noDispensa) await processPendingRefunds();
-      if (queued && !noDispensa) {
-        const payObj = order.transactions?.payments?.[0];
-        const mpPayId = String(payObj?.reference_id || payObj?.id || dataId);
-        processEmployeeDiscount({ paymentId: queued, mpPaymentId: mpPayId, amount, ownerClientId: machine.client_id || ownerClientId })
-          .catch(e => console.error('[webhook-emp-disc-err]', e.message));
-      }
       // Precio fijo: la orden se consumió con este pago → re-armar el QR siempre si es fija.
       if (machine.qr_mode === 'fixed') await armFixedQR(machine);
       return;
@@ -184,6 +179,24 @@ router.post('/mercadopago', async (req, res) => {
         return;
       }
 
+      // ── Pago de EMPLEADO (tv_emp_...): Checkout Pro con descuento bonificado ──
+      if (payment.external_reference && payment.external_reference.startsWith('tv_emp_')) {
+        const intentId = payment.external_reference;
+        const fulfillment = await fulfillEmployeePaymentIntent(intentId, { mpPaymentId: dataId, paymentData: payment });
+
+        if (!fulfillment.ok) {
+          console.warn(`[webhook] pago ${dataId} con intent ${intentId}: ${fulfillment.error || 'no aprobado'}`);
+          await logWebhook({ type, action, dataId, rawBody: req.body, result: `ERROR: ${fulfillment.error}` });
+          return;
+        }
+
+        const result = fulfillment.alreadyPaid ? 'SKIP: intent ya procesado'
+          : `OK EMPLEADO: ${fulfillment.pulses} pulsos acreditados (cobrado $${fulfillment.amountPaid}) → ${fulfillment.machineId}`;
+
+        await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, amount: fulfillment.amountPaid, intentId }, machineFound: fulfillment.machineId, result });
+        return;
+      }
+
       // Orden NUESTRA (tv_): ya la maneja el webhook de `order` bajo el id de la
       // orden. Por id de pago la duplicaría (ver isOurOrderRef). Solo libres acá.
       if (isOurOrderRef(payment.external_reference)) {
@@ -217,10 +230,6 @@ router.post('/mercadopago', async (req, res) => {
       else if (queued) console.log(`[webhook] ⚠ pago ${dataId} → $${amount} sin pulsos (< pulse_value $${machine.pulse_value}) → reembolso`);
       await logWebhook({ type, action, dataId, rawBody: req.body, mpResponse: { status: payment.status, pos_id: posId, amount }, posIdFound: posId, machineFound: machine.id, result });
       if (queued && noDispensa) await processPendingRefunds();
-      if (queued && !noDispensa) {
-        processEmployeeDiscount({ paymentId: queued, mpPaymentId: String(dataId), amount, ownerClientId: machine.client_id || ownerClientId, mpPaymentObj: payment })
-          .catch(e => console.error('[webhook-emp-disc-err]', e.message));
-      }
       // Precio fijo: la orden se consumió con este pago → re-armar el QR siempre si es fija.
       if (machine.qr_mode === 'fixed') {
         reportQrMiss({

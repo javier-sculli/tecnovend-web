@@ -1,8 +1,8 @@
 import { searchPayments, listConnectedClientIds } from './mp.js';
 import { findMachine, enqueuePayment, isOurOrderRef } from './payments.js';
 import { processPendingRefunds, flagExcessForRefund } from './refunds.js';
-import { processEmployeeDiscount } from './employee-discounts.js';
 import { armFixedQR } from './qr.js';
+import { fulfillEmployeePaymentIntent } from './employee-discounts.js';
 
 // ─── Reconciliación de pagos ───────────────────────────────────────────────────
 // MP NO manda webhook por los pagos "libres" (el cliente tipea el monto en el QR
@@ -27,7 +27,13 @@ function posOf(payment) {
 // Registra un pago aprobado traído por search. Devuelve {machine, amount, pulses,
 // noDispensa} si lo registró por primera vez, o null si se salta o ya existía.
 async function registerPayment(payment) {
-  // Saltamos los pagos de NUESTRAS órdenes: ya entran por el webhook de `order`
+  // Pagos con beneficio de empleado (tv_emp_...): reconciliar y cumplir si está aprobado
+  if (payment.external_reference && payment.external_reference.startsWith('tv_emp_')) {
+    const resEmp = await fulfillEmployeePaymentIntent(payment.external_reference, { mpPaymentId: payment.id, paymentData: payment });
+    return resEmp.paid ? { machine: { id: resEmp.machineId }, amount: resEmp.amountPaid, pulses: resEmp.pulses, noDispensa: resEmp.pulses < 1 } : null;
+  }
+
+  // Saltamos los pagos de NUESTRAS órdenes de POS físico: ya entran por el webhook de `order`
   // bajo el id de la ORDEN; acá el search trae el id del PAGO (distinto) y los
   // duplicaría. Solo capturamos los libres/tipeados (sin 'tv_'). Ver isOurOrderRef.
   if (isOurOrderRef(payment.external_reference)) return null;
@@ -75,15 +81,6 @@ async function reconcileClient(clientId, { beginDate } = {}) {
     if (!r) continue;
     nuevos++;
     if (r.noDispensa || r.excess > 0) hayReembolso = true;
-    if (!r.noDispensa) {
-      processEmployeeDiscount({
-        paymentId: r.paymentId,
-        mpPaymentId: String(p.id),
-        amount: r.amount,
-        ownerClientId: r.machine.client_id || clientId,
-        mpPaymentObj: p,
-      }).catch(e => console.error('[reconcile-emp-disc-err]', e.message));
-    }
     if (r.machine?.qr_mode === 'fixed') {
       armFixedQR(r.machine).catch(e => console.error('[reconcile-qr-err]', e.message));
     }
