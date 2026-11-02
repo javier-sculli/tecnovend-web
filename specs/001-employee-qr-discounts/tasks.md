@@ -53,6 +53,6 @@
 
 ---
 
-## Fase 6: Despliegue
-- [ ] **Task 6.1**: Despliegue a producción en Railway (`cd server && railway up --service tecnovend-api --ci`).
-- [ ] **Task 6.2**: Despliegue de frontend a Fly.io (`npm run build:web && cd server && fly deploy`).
+## Fase 6: Despliegue (Completado)
+- [x] **Task 6.1**: Despliegue a producción en Railway (`cd server && railway up --service tecnovend-api --ci`).
+- [x] **Task 6.2**: Despliegue de frontend a Fly.io (`npm run build:web && cd server && fly deploy`).
